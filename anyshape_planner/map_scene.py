@@ -30,7 +30,7 @@ class MapScene:
     @cached_property
     def checker(self):
         return ArticulatedCollision(self.robot, ESDF.build(self.bounds, self.resolution, self.obstacles),
-                                    base_height=self.base_height)
+                                    base_height=self.base_height, accelerate=True)
 
 
 def map_scene():

@@ -1,4 +1,4 @@
-"""Rigid poses and conservative advancement for the sampled ESDF field."""
+"""Rigid poses and continuous collision checks for the sampled ESDF field."""
 
 from dataclasses import dataclass
 from math import ceil
@@ -7,6 +7,41 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from .geometry import ESDF, Robot
+
+
+def free_radius(slack: float, rate: float) -> float:
+    """Convert a clearance margin into a certified interval radius."""
+    if not slack > 0:
+        return 0.0
+    return slack / rate if rate else np.inf
+
+
+def certify_interval(radius_at, start=0.0, end=1.0, *, max_samples=512) -> bool:
+    """Cover an interval with collision-free neighborhoods of sampled states."""
+    right_radius = radius_at(end)
+    if not right_radius > 0:
+        return False
+    left_radius = radius_at(start)
+    if not left_radius > 0:
+        return False
+
+    samples = 2
+    pending = [(start, end, left_radius, right_radius)]
+    while pending:
+        left, right, left_radius, right_radius = pending.pop()
+        # Strict overlap keeps the whole interval strictly above the margin.
+        if left_radius + right_radius > right - left:
+            continue
+        middle = left + (right - left) / 2
+        if samples >= max_samples or not left < middle < right:
+            return False
+        radius = radius_at(middle)
+        samples += 1
+        if not radius > 0:
+            return False
+        pending.append((middle, right, radius, right_radius))
+        pending.append((left, middle, left_radius, radius))
+    return True
 
 
 @dataclass(frozen=True)
@@ -59,24 +94,13 @@ class CollisionChecker:
 
     def edge_is_free(self, start: Pose, end: Pose) -> bool:
         edge = Edge(start, end, self.robot.radius)
-        if not self.is_free(end):
-            return False
-
-        # Work in field units. One unit of rigid-body point motion can change
-        # the sampled, interpolated field by at most its Lipschitz constant.
         variation = edge.bound * self.field.lipschitz
-        fraction = 0.0
-        for _ in range(512):
-            slack = self.clearance(edge.at(fraction)) - self.margin
-            if slack <= 0.0:
-                return False
-            if slack > (1.0 - fraction) * variation:
-                return True
-            advance = 0.95 * slack / variation
-            if advance < 1e-8:
-                return False
-            fraction += advance
-        return False
+
+        def radius_at(fraction):
+            pose = start if fraction == 0 else end if fraction == 1 else edge.at(fraction)
+            return free_radius(self.clearance(pose) - self.margin, variation)
+
+        return certify_interval(radius_at)
 
     def dense_clearance(self, path: list[Pose], step: float = 0.005) -> float:
         if step <= 0:

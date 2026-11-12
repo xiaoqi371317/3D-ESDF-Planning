@@ -1,6 +1,6 @@
 {
-  "planning_seconds": 19.367265499997302,
-  "smoothing_seconds": 15.84075469999516,
+  "planning_seconds": 0.8195159999886528,
+  "smoothing_seconds": 0.6354138999886345,
   "search": {
     "layers": 26,
     "states": 2169,
@@ -40,8 +40,8 @@
   ],
   "interior_knots_with_motion": 22,
   "interior_knots": 22,
-  "min_environment_m": 0.013546075439071784,
-  "min_self_m": 0.015791297151067113,
+  "min_environment_m": 0.013546075439071777,
+  "min_self_m": 0.01579129715106717,
   "fcl_samples_at_5mm": 5281,
   "peak_wheel_rad_s": 7.070820097278722,
   "wheel_limit_rad_s": 10.0,

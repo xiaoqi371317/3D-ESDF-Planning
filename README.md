@@ -16,6 +16,8 @@ python run_demo.py --scene map --port 8083 --open
 
 轨迹经连续碰撞检查后进行五次样条平滑，并重新验证样条。该场景的底盘在两道口之间转向 90°，较低的第二道口需要额外下降约 10 cm。默认轨迹的 22 个内部路点均保持前进，5 mm 密采样的 5,281 个构型通过 FCL 检查。封住第二道口后，搜索返回无连通路径。
 
+v1.5 在地图场景中使用 Numba 加速正运动学和 ESDF 查询，并用净空下界跳过无法降低最小净空的采样组。默认双窄口场景的联合搜索、样条拟合与碰撞复检合计约 1.5 秒。测试从地图加载完成后开始计时，连续碰撞检查与 5 mm 网格的最小净空都纳入复检。
+
 ![双窄口的平滑轨迹和逐关节曲线](assets/map-joint-trajectories.png)
 
 [演示动图](assets/map-corridor.gif) · [逐关节轨迹 CSV](assets/map-planned-trajectory.csv) · [测试报告](map_trajectory_results.json)
@@ -71,7 +73,7 @@ python run_demo.py --scene corridor --open
 
 点击 **规划并执行**。面板显示关节角、环境净空和自碰撞净空，可拖动手柄修改目标基座位姿，并在 **目标关节姿态** 中选择展开或收缩。启动参数 `--port` 可更改监听端口。
 
-`--urdf` 可加载带旋转、连续旋转、直线或固定关节的树形机器人。几何从 `collision` 读取，也可使用 `visual` 几何，支持基本几何体和文件网格。网格文件路径以 URDF 所在目录为基准。同名 `.poses.json` 用关节名指定 `nominal`、`compact` 两组数值，旋转关节使用弧度，直线关节使用米。`--sample-pitch` 可调整几何采样间距，双臂场景的默认值为 0.05 m。连续推进约束基座平移、旋转及所有关节下游点位移。自碰撞使用 link 局部 ESDF，对 URDF 相邻 link 应用允许碰撞矩阵。[双臂 URDF](anyshape_planner/models/dual_arm.urdf) · [姿态配置](anyshape_planner/models/dual_arm.poses.json)
+`--urdf` 可加载带旋转、连续旋转、直线或固定关节的树形机器人。几何从 `collision` 读取，也可使用 `visual` 几何，支持基本几何体和文件网格。网格文件路径以 URDF 所在目录为基准。同名 `.poses.json` 用关节名指定 `nominal`、`compact` 两组数值，旋转关节使用弧度，直线关节使用米。`--sample-pitch` 可调整几何采样间距，双臂场景的默认值为 0.05 m。连续碰撞检查结合基座平移、旋转和关节运动的位移上界，计算采样点能覆盖的安全区间。自碰撞检查先批量计算连杆包围盒的分离距离下界，再查询可能降低最小净空的 link 局部 ESDF。URDF 相邻 link 使用允许碰撞矩阵。[双臂 URDF](anyshape_planner/models/dual_arm.urdf) · [姿态配置](anyshape_planner/models/dual_arm.poses.json)
 
 ```powershell
 python -m pip install -r requirements-articulated-tests.txt
@@ -125,4 +127,4 @@ python -m anyshape_planner.tests.benchmark --stage all --output demo_results.jso
 
 浏览器中实测了分开规划与执行、拖动目标手柄触发重新规划、切换杂乱场景，以及启用 PyTorch 优化。窗口演示终点误差为 0.48 mm 和 0.03°，拖动目标后到达新目标的误差为 0.35 mm 和 0.02°。
 
-逐次耗时和验收数据保存在 [demo_results.json](demo_results.json)。窗口测试采用窗口中心附近的位姿采样偏置，同时保留全空间随机采样。连续推进使用三线性场的 Lipschitz 上界。净空基于离散 ESDF 与有限机器人采样点，换用更细的几何特征时，需要重新验证体素和采样分辨率。对拍的 0 漏检只描述上述测试样本。
+逐次耗时和验收数据保存在 [demo_results.json](demo_results.json)。窗口测试采用窗口中心附近的位姿采样偏置，同时保留全空间随机采样。连续碰撞检查用三线性场的 Lipschitz 上界和区间两端的净空证明整段安全，再细分尚未覆盖的区间。净空基于离散 ESDF 与有限机器人采样点，换用更细的几何特征时，需要重新验证体素和采样分辨率。对拍的 0 漏检只描述上述测试样本。

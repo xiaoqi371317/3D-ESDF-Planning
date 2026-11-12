@@ -32,9 +32,12 @@ def run():
 
     fcl = reference(scene)
     samples = 0
+    sampled_minimum = np.full(2, np.inf)
     for state in trajectory.dense_states(.005):
         assert field.valid(state) and fcl.check(state) == (False, [])
+        sampled_minimum = np.minimum(sampled_minimum, field.clearances(state))
         samples += 1
+    np.testing.assert_allclose(clearance, sampled_minimum, rtol=0, atol=1e-12)
 
     times = np.linspace(0, trajectory.duration, 2401)
     q = trajectory.spline(times)

@@ -83,7 +83,7 @@ class MapPlanner(ArticulatedPlanner):
         for fraction in (0., .60, .83, 1.):
             q = self.robot.clamp(self.nominal + fraction * delta)
             if checker.self_clearance(q) > checker.self_margin:
-                self.prior.append((q, self.robot.frozen(q).points))
+                self.prior.append((q, checker.prepare_environment_samples(self.robot.frozen(q).points)))
 
     def _clearance_2d(self, points):
         height = np.full((len(points), 1), self.chassis_z)
@@ -188,9 +188,10 @@ class MapPlanner(ArticulatedPlanner):
                 if cancelled():
                     raise PlanningError("Planning cancelled.")
                 pose = Pose.at(p, Rotation.from_euler("z", yaw))
+                rotation = pose.rotation.as_matrix()
                 options = []
-                for q, points in self.prior:
-                    distance = self.checker.field.query(pose.rotation.apply(points) + p).min()
+                for q, samples in self.prior:
+                    distance = self.checker.environment_clearance(samples, rotation, p)
                     if distance > self.checker.margin + .008:
                         options.append((q, distance))
                         candidates.append(Configuration(pose, q))

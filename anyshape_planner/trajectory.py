@@ -7,7 +7,7 @@ from scipy.interpolate import BPoly, PchipInterpolator
 from scipy.spatial.transform import Rotation
 
 from .articulated_collision import Configuration
-from .collision import Pose
+from .collision import Pose, certify_interval
 from .controller import TrackingError, TrackingSample
 from .planner import PlanningError
 
@@ -71,7 +71,7 @@ class PlanarTrajectory:
         controls = np.stack((start, start + outgoing, start + 2 * outgoing,
                              end - 2 * incoming, end - incoming, end), axis=1)
 
-        rates = []
+        rates, pair_rates = [], []
         scale = 1.0
         for control, seconds in zip(controls, duration):
             hull = _velocity_hull(control, seconds)
@@ -81,13 +81,15 @@ class PlanarTrajectory:
             scale = max(scale, 1.01 * max(speed.max(), turn.max() / 2.4,
                         wheel.max() / drive.wheel_speed_limit, (joint / robot.speeds).max(initial=0)))
             point = (speed + robot.radius * turn + joint @ robot.joint_radii).max()
-            relative = (joint @ checker.relative_rates.T).max(initial=0)
-            rates.append((point, relative))
+            relative = (joint @ checker.dynamic_rates.T).max(axis=0, initial=0)
+            rates.append((point, relative.max(initial=0)))
+            pair_rates.append(relative)
 
         self.knots = knots * scale
         self.duration = float(self.knots[-1])
         self.spline = BPoly(np.swapaxes(controls, 0, 1), self.knots)
         self.rates = np.asarray(rates) / scale
+        self.pair_rates = np.asarray(pair_rates) / scale
 
     def at(self, time):
         if time <= 0:
@@ -103,26 +105,15 @@ class PlanarTrajectory:
 
     def _certify(self, cancelled):
         checker = self.checker
-        if not checker.is_free(self.goal):
-            return False
-        for start, end, (point, relative) in zip(self.knots[:-1], self.knots[1:], self.rates):
-            time = start
+        for start, end, (point, _), pair_rates in zip(self.knots[:-1], self.knots[1:], self.rates, self.pair_rates):
             env_rate = point * checker.field.lipschitz
-            for _ in range(2500):
+
+            def radius_at(time):
                 if cancelled():
                     raise PlanningError("Planning cancelled.")
-                env, self_distance = checker.clearances(self.at(time))
-                env_slack, self_slack = env - checker.margin, self_distance - checker.self_margin
-                if min(env_slack, self_slack) <= 0:
-                    return False
-                step = min(env_slack / env_rate if env_rate else np.inf,
-                           self_slack / relative if relative else np.inf)
-                if step > end - time:
-                    break
-                if step < 1e-8:
-                    return False
-                time += .95 * step
-            else:
+                return checker.free_interval_radius(self.at(time), env_rate, pair_rates)
+
+            if not certify_interval(radius_at, start, end, max_samples=2500):
                 return False
         return True
 
@@ -134,6 +125,43 @@ class PlanarTrajectory:
             count = max(1, ceil((b - a) * speed / step))
             for time in np.linspace(a, b, count + 1)[1:]:
                 yield self.at(time)
+
+    def _dense_minimum(self, cancelled, step=.005):
+        """Reduce the 5 mm grid, bounding groups that cannot lower its minima."""
+        checker = self.checker
+
+        def measure(time):
+            if cancelled():
+                raise PlanningError("Planning cancelled.")
+            return checker.clearances(self.at(time))
+
+        distances = [measure(time) for time in self.knots]
+        environment, self_distance = np.min(distances, axis=0)
+        for index, (point, relative) in enumerate(self.rates):
+            start, end = self.knots[index:index + 2]
+            count = max(1, ceil((end - start) * point / step))
+            times = np.linspace(start, end, count + 1)
+            env_rate = point * checker.field.lipschitz
+            pending = [(0, count, distances[index], distances[index + 1])]
+            while pending:
+                left, right, first, last = pending.pop()
+                if right - left <= 1:
+                    continue
+                span = times[right] - times[left]
+                # The maximum of the two endpoint cones is at least their
+                # mean everywhere. Each cone is a lower bound on clearance.
+                env_safe = (env_rate == 0 or
+                            first[0] + last[0] - env_rate * span >= 2 * environment + 1e-10)
+                self_safe = (relative == 0 or
+                             first[1] + last[1] - relative * span >= 2 * self_distance + 1e-10)
+                if env_safe and self_safe:
+                    continue
+                middle = (left + right) // 2
+                values = measure(times[middle])
+                environment = min(environment, values[0])
+                self_distance = min(self_distance, values[1])
+                pending.extend(((left, middle, first, values), (middle, right, values, last)))
+        return environment, self_distance
 
     def wheel_speeds(self, times):
         yaw = self.spline(times)[..., 2]
@@ -150,13 +178,9 @@ class PlanarTrajectory:
             trajectory = cls(path, checker, drive, scale)
             if not trajectory._certify(cancelled):
                 continue
-            minimum = np.array([np.inf, np.inf])
-            for state in trajectory.dense_states():
-                if cancelled():
-                    raise PlanningError("Planning cancelled.")
-                minimum = np.minimum(minimum, checker.clearances(state))
-            if np.all(minimum > (checker.margin, checker.self_margin)):
-                return trajectory, tuple(minimum)
+            environment, self_distance = trajectory._dense_minimum(cancelled)
+            if environment > checker.margin and self_distance > checker.self_margin:
+                return trajectory, (environment, self_distance)
         raise PlanningError("样条及保守回退均未通过连续碰撞复检。")
 
 
