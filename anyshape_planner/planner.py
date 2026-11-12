@@ -131,12 +131,16 @@ def connect_trees(start, roots, radius, rng, sample, make_edge, edge_is_free,
 
 class RRTConnect:
     def __init__(self, checker: CollisionChecker, bounds, seed: int = 0,
-                 guide: Callable[[np.random.Generator], Pose] | None = None):
+                 guide: Callable[[np.random.Generator], Pose] | None = None, *, base_height=None):
         self.checker = checker
         self.bounds = bounds
         self.rng = np.random.default_rng(seed)
         self.guide = guide
         self.radius = checker.robot.radius
+        self.base_height = base_height
+
+    def _project(self, pose):
+        return pose if self.base_height is None else pose.on_plane(self.base_height)
 
     def _goal_roots(self, start: Pose, goal: Pose, free_orientation: bool,
                     tolerance: float) -> list[Pose]:
@@ -155,7 +159,7 @@ class RRTConnect:
             rotation = goal.rotation
             if free_orientation:
                 rotation = start.rotation if attempt == 0 else Rotation.random(random_state=self.rng)
-            pose = Pose.at(position, rotation)
+            pose = self._project(Pose.at(position, rotation))
             if self.checker.is_free(pose):
                 roots.append(pose)
                 if len(roots) == 6:
@@ -169,14 +173,16 @@ class RRTConnect:
              cancelled: Callable[[], bool] = lambda: False) -> Plan:
         if position_tolerance < 0:
             raise ValueError("Goal position tolerance must be nonnegative.")
+        if self.base_height is not None and not all(pose.is_planar(self.base_height) for pose in (start, goal)):
+            raise PlanningError("Start and goal must be on the base plane.")
         if not self.checker.is_free(start):
             raise PlanningError("The start pose is in collision.")
         roots = self._goal_roots(start, goal, free_orientation, position_tolerance)
 
         def sample(choice):
             if choice < .40 and self.guide is not None:
-                return self.guide(self.rng)
-            return Pose.at(self.rng.uniform(*self.bounds), Rotation.random(random_state=self.rng))
+                return self._project(self.guide(self.rng))
+            return self._project(Pose.at(self.rng.uniform(*self.bounds), Rotation.random(random_state=self.rng)))
 
         plan = connect_trees(start, roots, self.radius, self.rng, sample,
                              lambda a, b: Edge(a, b, self.radius), self.checker.edge_is_free,

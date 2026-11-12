@@ -31,7 +31,7 @@ def _limit(vector: np.ndarray, maximum: float) -> np.ndarray:
 
 class Follower:
     def __init__(self, path: list[Pose] | list[Configuration], checker: CollisionChecker | ArticulatedCollision,
-                 linear_limit: float = 1.0, angular_limit: float = 2.4):
+                 linear_limit: float = 1.0, angular_limit: float = 2.4, drive=None):
         if len(path) < 2 or min(linear_limit, angular_limit) <= 0:
             raise ValueError("Tracking requires two poses and positive speed limits.")
         self.checker = checker
@@ -39,6 +39,7 @@ class Follower:
         self.goal = path[-1]
         self.linear_limit = linear_limit
         self.angular_limit = angular_limit
+        self.drive = drive
         self.edges = [checker.edge(a, b) if self.articulated else Edge(a, b, checker.robot.radius)
                       for a, b in zip(path, path[1:])]
         self.durations = [self._duration(edge) for edge in self.edges]
@@ -55,6 +56,8 @@ class Follower:
                        1.5 * np.linalg.norm(rigid.rotvec) / self.angular_limit)
         if self.articulated:
             duration = max(duration, 1.5 * (np.abs(edge.joint_delta) / self.checker.robot.speeds).max(initial=0))
+        if self.drive is not None:
+            duration = max(duration, self.drive.duration_bound(rigid))
         return duration
 
     def _base(self, pose):
@@ -100,6 +103,8 @@ class Follower:
         reference = self.edges[self.segment].at(fraction**2 * (3 - 2 * fraction))
         v = _limit(18 * (reference.position - self.pose.position), self.linear_limit)
         omega = _limit(18 * self._base(self.pose).relative_rotation(self._base(reference)), self.angular_limit)
+        if self.drive is not None:
+            v, omega = self.drive.limit(self.pose.rotation, v, omega)
         next_base = Pose.at(self.pose.position + dt * v, Rotation.from_rotvec(dt * omega) * self.pose.rotation)
         next_pose = next_base
         if self.articulated:

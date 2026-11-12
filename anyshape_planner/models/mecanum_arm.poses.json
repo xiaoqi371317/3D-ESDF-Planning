@@ -1,0 +1,4 @@
+{
+  "nominal": {"lift": 0.34, "shoulder": 0.0, "elbow": 0.0},
+  "compact": {"lift": 0.10, "shoulder": 1.64, "elbow": -0.34}
+}

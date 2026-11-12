@@ -27,7 +27,13 @@ class ArticulatedPlanner:
         self.nominal = self.robot.postures["nominal"]
         self.compact = self.robot.postures["compact"]
 
+    def _project(self, pose):
+        height = self.checker.base_height
+        return pose if height is None else pose.on_plane(height)
+
     def _targets(self, start, goal, free_orientation, position_tolerance):
+        if self.checker.base_height is not None and not goal.base.is_planar(self.checker.base_height):
+            raise PlanningError("目标底盘位姿必须在地面平面内。")
         goals = [goal] if self.checker.is_free(goal) else []
         if goals and not free_orientation and position_tolerance == 0:
             return goals
@@ -41,7 +47,7 @@ class ArticulatedPlanner:
             rotation = goal.rotation
             if free_orientation:
                 rotation = start.rotation if index == 0 else Rotation.random(random_state=self.rng)
-            candidate = Configuration(Pose.at(position, rotation), goal.joints)
+            candidate = Configuration(self._project(Pose.at(position, rotation)), goal.joints)
             if self.checker.is_free(candidate):
                 goals.append(candidate)
                 if len(goals) == 5:
@@ -58,7 +64,7 @@ class ArticulatedPlanner:
         for _ in range(80):
             position = np.clip(base.position + self.rng.normal(0, .28, 3), *self.bounds)
             rotation = Rotation.from_rotvec(self.rng.normal(0, .32, 3)) * base.rotation
-            pose = Pose.at(position, rotation)
+            pose = self._project(Pose.at(position, rotation))
             if fixed.is_free(pose):
                 return pose
         raise PlanningError("未找到可用的紧凑姿态入口。")
@@ -84,7 +90,8 @@ class ArticulatedPlanner:
             rotation = Rotation.from_rotvec(rng.normal(0, .18, 3)) * center.rotation
             return Pose.at(position, rotation)
 
-        guide = RRTConnect(fixed, self.bounds, int(self.rng.integers(2**32)), sample_portal)
+        guide = RRTConnect(fixed, self.bounds, int(self.rng.integers(2**32)), sample_portal,
+                           base_height=self.checker.base_height)
         path, iterations = [a], 0
         for source, target in zip(anchors, anchors[1:]):
             segment = guide.plan(source, target, max_iterations=520, cancelled=cancelled)
@@ -112,7 +119,7 @@ class ArticulatedPlanner:
             else:
                 center = self.nominal if mode < .50 else self.compact
                 joints = self.robot.clamp(center + self.rng.normal(0, .13, len(center)))
-            return Configuration(Pose.at(position, rotation), joints)
+            return Configuration(self._project(Pose.at(position, rotation)), joints)
 
         plan = connect_trees(start, goals, self.robot.radius, self.rng, sample,
                              self.checker.edge, self.checker.edge_is_free, max_iterations, cancelled,

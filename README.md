@@ -4,6 +4,25 @@
 
 ![L 形机器人旋转穿过窗口](assets/window-demo.gif)
 
+## 全向底盘与升降折叠机械臂
+
+[麦克纳姆轮移动机械臂 URDF](anyshape_planner/models/mecanum_arm.urdf)包含四轮底盘、24 cm 行程的升降立柱、肩关节、肘关节和夹爪。轮子用圆柱包络做碰撞检测，用斜滚子网格渲染。规划和跟踪将底盘约束在地面 (x, y, yaw)，并用麦克纳姆逆运动学检查四轮速度。仿真使用运动学速度控制。[麦克纳姆逆运动学参考](https://github.com/ros-controls/ros2_controllers/blob/master/mecanum_drive_controller/src/mecanum_drive_controller.cpp#L586-L605)
+
+```powershell
+python run_demo.py --scene mobile --port 8082 --open
+```
+
+![麦克纳姆底盘带折叠臂通过低矮走廊](assets/mobile-corridor.gif)
+
+走廊宽 0.78 m、高 0.83 m、长 2.38 m。整机展开时宽约 1.42 m、高 0.94 m，降高并折臂后宽约 0.66 m、高 0.70 m。底盘在入口前横移对正，穿越后恢复展开姿态。界面显示升降位移、肩肘角度、净空和峰值轮速。
+
+```powershell
+python -m pip install -r requirements-articulated-tests.txt
+python -m anyshape_planner.tests.mobile_benchmark --output mobile_results.json
+```
+
+测试包括仅升降、仅折臂、关节全锁定与联合规划的对照，以及平面约束、FCL 密采样复检、关节和轮速限制。[移动机械臂测试数据](mobile_results.json)
+
 ## 浮动基座与双臂走廊
 
 双臂场景有 6 个基座自由度和 4 个旋转关节。展开宽度为 1.84 m，收缩后约 0.62 m，走廊宽 0.74 m、高 0.62 m。基座从房间接近走廊时双臂收缩，穿过后重新展开。
@@ -17,7 +36,7 @@ python run_demo.py --scene corridor --open
 
 点击 **规划并执行**。面板显示关节角、环境净空和自碰撞净空，可拖动手柄修改目标基座位姿，并在 **目标关节姿态** 中选择展开或收缩。启动参数 `--port` 可更改监听端口。
 
-`--urdf` 可加载带旋转、连续旋转或固定关节的树形机器人。几何从 `collision` 读取，也可使用 `visual` 几何，支持基本几何体和文件网格。网格文件路径以 URDF 所在目录为基准。同名 `.poses.json` 用关节名指定 `nominal`、`compact` 两组弧度值，可参考 [双臂 URDF](anyshape_planner/models/dual_arm.urdf) 和 [姿态配置](anyshape_planner/models/dual_arm.poses.json)。`--sample-pitch` 可调整几何采样间距，双臂场景的默认值为 0.05 m。连续推进约束基座平移、旋转及所有关节下游点位移。自碰撞使用 link 局部 ESDF，对 URDF 相邻 link 应用允许碰撞矩阵。
+`--urdf` 可加载带旋转、连续旋转、直线或固定关节的树形机器人。几何从 `collision` 读取，也可使用 `visual` 几何，支持基本几何体和文件网格。网格文件路径以 URDF 所在目录为基准。同名 `.poses.json` 用关节名指定 `nominal`、`compact` 两组数值，旋转关节使用弧度，直线关节使用米。`--sample-pitch` 可调整几何采样间距，双臂场景的默认值为 0.05 m。连续推进约束基座平移、旋转及所有关节下游点位移。自碰撞使用 link 局部 ESDF，对 URDF 相邻 link 应用允许碰撞矩阵。[双臂 URDF](anyshape_planner/models/dual_arm.urdf) · [姿态配置](anyshape_planner/models/dual_arm.poses.json)
 
 ```powershell
 python -m pip install -r requirements-articulated-tests.txt

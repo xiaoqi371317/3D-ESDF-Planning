@@ -18,6 +18,7 @@ from .collision import Pose
 from .controller import Follower, TrackingError
 from .corridor import Corridor, corridor
 from .geometry import Robot
+from .mobile import MOBILE_SCENE, MobileCorridor, mobile_corridor
 from .planner import PlanningError, RRTConnect
 from .scenes import clutter, window
 
@@ -34,6 +35,7 @@ class Demo:
         self.robot = robot
         self.custom_articulated = articulated
         self.articulated = False
+        self.mobile = False
         self.scenes = {"窗口穿越": window(robot)}
         self.events = SimpleQueue()
         self.workers = ThreadPoolExecutor(max_workers=1)
@@ -63,8 +65,9 @@ class Demo:
         gui.set_panel_label("3D ESDF 路径规划")
         gui.configure_theme(dark_mode=True, control_width="medium", show_logo=False,
                             show_share_button=False, brand_color=(80, 196, 168))
-        self.chooser = gui.add_dropdown("场景", ("窗口穿越", "杂乱环境", "双臂收缩走廊"), initial_value=scene_name)
-        gui.add_markdown("拖动手柄设置目标位姿。执行中松开手柄，机器人会从当前位置重新规划。")
+        self.chooser = gui.add_dropdown("场景", ("窗口穿越", "杂乱环境", "双臂收缩走廊", MOBILE_SCENE),
+                                        initial_value=scene_name)
+        self.instructions = gui.add_markdown("")
         self.free_orientation = gui.add_checkbox("目标姿态自由", False)
         self.tolerance = gui.add_number("位置容差（m）", 0.0, min=0.0, max=.3, step=.01)
         self.goal_posture = gui.add_dropdown("目标关节姿态", ("展开", "收缩"), initial_value="展开", visible=False)
@@ -98,7 +101,10 @@ class Demo:
         self._change_scene(scene_name)
 
     def _camera(self, client):
-        if self.articulated:
+        if self.mobile:
+            client.camera.position = (3.8, -6.7, 3.55)
+            client.camera.look_at = (.69, .10, .38)
+        elif self.articulated:
             client.camera.position = (3.65, -6.9, 4.6)
             client.camera.look_at = (.38, .10, -.10)
         else:
@@ -118,12 +124,20 @@ class Demo:
         for handle in [*self.body_parts, *self.goal_parts]:
             handle.remove()
         if self.articulated:
-            meshes = [link.geometry.mesh for link in self.scene.robot.links]
+            meshes = [(link.name, link.visual if link.visual is not None else link.geometry.mesh)
+                      for link in self.scene.robot.links]
         else:
-            meshes = [self.robot.mesh]
+            meshes = [("body", self.robot.mesh)]
         self.body_parts, self.goal_parts = [], []
-        for index, mesh in enumerate(meshes):
+        for index, (name, mesh) in enumerate(meshes):
             color = (255, 168, 52) if index == 0 else (255, 208, 96)
+            if self.mobile:
+                if name == "base":
+                    color = (60, 144, 190)
+                elif name.startswith("wheel_"):
+                    color = (91, 107, 124)
+                else:
+                    color = (255, 172, 53)
             self.body_parts.append(self._mesh(f"/robot/link_{index}", mesh, color))
             self.goal_parts.append(self._mesh(f"/target/link_{index}", mesh, (239, 93, 188),
                                               wireframe=True, opacity=.55))
@@ -141,6 +155,14 @@ class Demo:
     def _goal_angles(self):
         key = "compact" if self.goal_posture.value == "收缩" else "nominal"
         return self.scene.robot.postures[key]
+
+    def _target_pose(self):
+        rotation = Rotation.from_quat(np.array(self.target.wxyz), scalar_first=True)
+        pose = Pose.at(np.array(self.target.position), rotation)
+        if self.mobile:
+            pose = pose.on_plane(self.scene.base_height)
+            _move(self.target, pose)
+        return pose
 
     def _stop(self):
         self.cancel.set()
@@ -160,34 +182,46 @@ class Demo:
         if self.articulated:
             self.goal_posture.value = "展开"
             self._move_links(self.goal_parts, self._goal_angles())
-        self._report("等待规划", "橙色是机器人，粉色线框是目标位姿。")
+        details = ("蓝色是轮式底盘，橙色是机械臂，粉色线框是目标。" if self.mobile else
+                   "橙色是机器人，粉色线框是目标位姿。")
+        self._report("等待规划", details)
 
     def _change_scene(self, name: str):
         self._stop()
         self._report("正在构建 ESDF")
         if name not in self.scenes:
-            self.scenes[name] = (corridor(self.custom_articulated) if name == "双臂收缩走廊"
-                                 else clutter(robot=self.robot))
+            if name == MOBILE_SCENE:
+                self.scenes[name] = mobile_corridor()
+            elif name == "双臂收缩走廊":
+                self.scenes[name] = corridor(self.custom_articulated)
+            else:
+                self.scenes[name] = clutter(robot=self.robot)
         self.scene = self.scenes[name]
         self.checker = self.scene.checker
         self.articulated = isinstance(self.scene, Corridor)
+        self.mobile = isinstance(self.scene, MobileCorridor)
         self.goal_posture.visible = self.articulated
-        self.floor.position = (0, 0, self.scene.bounds[0, 2] - .02)
+        self.instructions.content = ("拖动手柄设定地面位置和偏航角。执行中松开手柄会重新规划。" if self.mobile else
+                                     "拖动手柄设置目标位姿。执行中松开手柄，机器人会从当前位置重新规划。")
+        self.floor.position = (0, 0, self.scene.base_height if self.mobile else self.scene.bounds[0, 2] - .02)
         self._load_robot_parts()
         for client in self.server.get_clients().values():
             self._camera(client)
         for handle in self.obstacle_handles:
             handle.remove()
         is_window = not self.articulated and self.scene.portal is not None
+        opacity = ((.14, .40, .15) if self.mobile else (.16, .37, .32, .10)) if self.articulated else (
+            (.46 if is_window else .88,) * len(self.scene.obstacles))
         self.obstacle_handles = [
             self._mesh(f"/obstacles/{i}", obstacle.mesh, (104, 137, 175),
-                       opacity=([.16, .37, .32, .10][i] if self.articulated else .46 if is_window else .88),
+                       opacity=opacity[i],
                        side="double", cast_shadow=not (is_window or self.articulated))
             for i, obstacle in enumerate(self.scene.obstacles)
         ]
         if self.articulated:
-            x, y, z = self.scene.half_length, self.scene.half_width, self.scene.half_height
-            rings = np.array([[[i, -y, -z], [i, y, -z], [i, y, z], [i, -y, z]] for i in (-x, x)])
+            x, y = self.scene.half_length, self.scene.half_width
+            low, high = self.scene.opening_z
+            rings = np.array([[[i, -y, low], [i, y, low], [i, y, high], [i, -y, high]] for i in (-x, x)])
             edges = np.stack((rings, np.roll(rings, -1, axis=1)), axis=2).reshape(-1, 2, 3)
             lines = np.concatenate((edges, rings.transpose(1, 0, 2)))
             self.obstacle_handles.append(self.server.scene.add_line_segments(
@@ -242,12 +276,11 @@ class Demo:
         self._stop()
         self.cancel = Event()
         self.auto_execute = execute
-        rotation = Rotation.from_quat(np.array(self.target.wxyz), scalar_first=True)
-        goal = Pose.at(np.array(self.target.position), rotation)
+        goal = self._target_pose()
         if self.articulated:
             planner = ArticulatedPlanner(self.checker, self.scene.bounds, self.scene.portals, self.seed)
             goal = Configuration(goal, self._goal_angles())
-            detail = "SE(3) × 关节空间"
+            detail = "SE(2) × 关节空间" if self.mobile else "SE(3) × 关节空间"
         else:
             guide = self.scene.sample_portal if self.scene.portal is not None else None
             planner = RRTConnect(self.checker, self.scene.bounds, self.seed, guide)
@@ -281,7 +314,8 @@ class Demo:
     def _execute(self):
         if self.path is not None:
             self.execute_button.disabled = True
-            self.following = Follower(self.path, self.checker)
+            self.following = Follower(self.path, self.checker, drive=self.scene.drive if self.mobile else None)
+            self.peak_wheel_speed = 0.0
             self.path = None
             self.last_ui_update = 0.0
 
@@ -294,6 +328,7 @@ class Demo:
                 self._report("规划未找到可执行路径", str(error))
         if self.following is None:
             return
+        previous = self.following.samples[-1]
         try:
             sample = self.following.step(dt)
         except TrackingError as error:
@@ -302,24 +337,38 @@ class Demo:
             return
         self.pose = sample.pose
         self._show_robot()
+        wheels = ""
+        if self.mobile:
+            drive = self.scene.drive
+            speeds = drive.between(previous.pose.base, sample.pose.base, dt)
+            self.peak_wheel_speed = max(self.peak_wheel_speed, np.abs(speeds).max())
+            wheels = f"  \n峰值轮速 **{self.peak_wheel_speed:.2f} / {drive.wheel_speed_limit:.0f} rad/s**"
         if self.following.done:
             position, angle = self.following.terminal_error
             minimum = min(state.clearance for state in self.following.samples)
             minimum_self = min(state.self_clearance for state in self.following.samples) if self.articulated else None
-            joints = (f"  \n关节最大误差 **{np.rad2deg(self.following.terminal_joint_error):.2f}°**"
-                      if self.articulated else "")
+            joints = ""
+            if self.articulated:
+                robot = self.scene.robot
+                error = np.abs(robot.delta(self.pose.joints, self.following.goal.joints))
+                degrees = np.rad2deg(error[~robot.prismatic].max(initial=0.0))
+                joints = f"  \n旋转关节最大误差 **{degrees:.2f}°**"
+                if robot.prismatic.any():
+                    joints += f" · 直线关节 **{1000 * error[robot.prismatic].max():.2f} mm**"
             self._report("已到达目标", f"{self.last_plan_summary}  \n"
                          f"跟踪净空 {self._clearance_text(minimum, minimum_self)}  \n"
-                         f"终点误差 **{1000 * position:.2f} mm / {np.rad2deg(angle):.2f}°**{joints}")
+                         f"终点误差 **{1000 * position:.2f} mm / {np.rad2deg(angle):.2f}°**{joints}{wheels}")
             self.following = None
         elif sample.time - self.last_ui_update >= .16:
             self.last_ui_update = sample.time
             clearance = self._clearance_text(sample.clearance, sample.self_clearance if self.articulated else None)
             angles = ""
             if self.articulated:
-                angles = "  \n关节角 " + " / ".join(f"{angle:.0f}°" for angle in np.rad2deg(self.pose.joints))
+                values = [f"{value:.2f} m" if linear else f"{np.rad2deg(value):.0f}°"
+                          for value, linear in zip(self.pose.joints, self.scene.robot.prismatic)]
+                angles = "  \n关节 " + " / ".join(values)
             self._report("执行中", f"{self.last_plan_summary}  \n"
-                         f"当前净空 {clearance} · {sample.time:.1f} s{angles}")
+                         f"当前净空 {clearance} · {sample.time:.1f} s{angles}{wheels}")
 
     def run(self):
         dt = .025
@@ -340,6 +389,7 @@ class Demo:
                     elif kind == "execute":
                         self._execute()
                     elif kind == "target":
+                        self._target_pose()
                         if self.articulated:
                             self._move_links(self.goal_parts, self._goal_angles())
                         if self.following is not None or (self.pending is not None and self.auto_execute):

@@ -1,0 +1,138 @@
+{
+  "collision": {
+    "samples": 10000,
+    "agreement": 0.9933,
+    "false_positive": 67,
+    "false_negative": 0,
+    "poses_per_second": 596.4584492178839
+  },
+  "kinematics": {
+    "fk_samples": 80,
+    "max_fk_error": 5.551115123125783e-16,
+    "displacement_trials": 400,
+    "maximum_displacement_ratio": 0.9631161837310318,
+    "off_plane_pose_rejected": true
+  },
+  "ablations": {
+    "fully_locked_blocked": true,
+    "retraction_only_blocked": true,
+    "folding_only_blocked": true,
+    "corridor_width_m": 0.78,
+    "corridor_height_m": 0.83,
+    "deployed_width_m": 1.423,
+    "deployed_height_m": 0.9350000000000002,
+    "folded_width_m": 0.6559999999999999,
+    "folded_height_m": 0.6950000000000001,
+    "retraction_m": 0.24000000000000002,
+    "yaw_checks": 73
+  },
+  "planning": {
+    "successes": 12,
+    "trials": 12,
+    "median_s": 2.2314673500004574,
+    "min_environment_m": 0.054679490314985965,
+    "min_self_m": 0.015791297151067252,
+    "tight_transition": {
+      "seconds": 5.393307199992705,
+      "iterations": 9,
+      "environment_clearance_m": 0.054679490314985965,
+      "self_clearance_m": 0.01215942871374157
+    },
+    "seeds": [
+      {
+        "seed": 0,
+        "seconds": 2.253558199998224,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 1,
+        "seconds": 2.251997300001676,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 2,
+        "seconds": 2.373144899989711,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 3,
+        "seconds": 2.391198900004383,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 4,
+        "seconds": 2.362635700003011,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 5,
+        "seconds": 2.2163763000135077,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 6,
+        "seconds": 2.2159919000114314,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 7,
+        "seconds": 2.240249700000277,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 8,
+        "seconds": 2.2132136000000173,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 9,
+        "seconds": 2.222685000000638,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 10,
+        "seconds": 2.213197700009914,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      },
+      {
+        "seed": 11,
+        "seconds": 2.210055299990927,
+        "iterations": 0,
+        "environment_clearance_m": 0.054679490314985965,
+        "self_clearance_m": 0.015791297151067252
+      }
+    ]
+  },
+  "tracking": {
+    "wheel_speed_peak_rad_s": 7.148258538946602,
+    "wheel_speed_limit_rad_s": 10.0,
+    "lateral_speed_peak_m_s": 0.24341438354236064,
+    "terminal_position_m": 0.0003381686506128951,
+    "terminal_yaw_deg": 0.003922856381219744,
+    "terminal_lift_m": 0.00011768569143666419,
+    "terminal_arm_deg": 0.0460764384274016,
+    "simulation_seconds": 11.039999999999853
+  }
+}

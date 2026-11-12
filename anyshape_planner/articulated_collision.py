@@ -37,11 +37,12 @@ class ArticulatedEdge:
 
 class ArticulatedCollision:
     def __init__(self, robot: ArticulatedRobot, field: ESDF, margin=.004, local_resolution=.008,
-                 self_margin=.001, extra_allowed=()):
+                 self_margin=.001, extra_allowed=(), base_height=None):
         self.robot = robot
         self.field = field
         self.margin = margin
         self.self_margin = self_margin
+        self.base_height = base_height
         self.offsets = np.cumsum([0] + [len(link.geometry.points) for link in robot.links[:-1]])
         names = {link.name: index for index, link in enumerate(robot.links)}
         self.allowed = robot.adjacent | {tuple(sorted((names[a], names[b]))) for a, b in extra_allowed}
@@ -59,8 +60,14 @@ class ArticulatedCollision:
             lipschitz = max(self.local_fields[a].lipschitz, self.local_fields[b].lipschitz)
             for joint in active:
                 if robot.ancestors[a, joint.dof] != robot.ancestors[b, joint.dof]:
-                    self.relative_rates[pair_index, joint.dof] = lipschitz * max(
-                        robot.reach[joint.child, a], robot.reach[joint.child, b])
+                    reach = 1.0 if joint.prismatic else max(robot.reach[joint.child, a], robot.reach[joint.child, b])
+                    self.relative_rates[pair_index, joint.dof] = lipschitz * reach
+        dynamic = np.any(self.relative_rates, axis=1)
+        self.dynamic_pairs = [pair for pair, moving in zip(self.pairs, dynamic) if moving]
+        reference = robot.fk(robot.limits.mean(axis=1))
+        self.fixed_self_clearance = min((self._pair_distance(a, b, *reference)
+                                         for (a, b), moving in zip(self.pairs, dynamic) if not moving),
+                                        default=np.inf)
 
     def edge(self, start, end):
         return ArticulatedEdge(start, end, self.robot)
@@ -92,21 +99,26 @@ class ArticulatedCollision:
 
     def self_clearance(self, q, fk=None):
         rotations, translations = self.robot.fk(q) if fk is None else fk
-        return min((self._pair_distance(a, b, rotations, translations) for a, b in self.pairs),
-                   default=np.inf)
+        moving = min((self._pair_distance(a, b, rotations, translations) for a, b in self.dynamic_pairs),
+                     default=np.inf)
+        return min(moving, self.fixed_self_clearance)
 
     def clearances(self, state):
         fk = self.robot.fk(state.joints)
         return float(self.link_clearances(state, fk).min()), float(self.self_clearance(state.joints, fk))
 
+    def valid(self, state):
+        return (self.robot.valid(state.joints)
+                and (self.base_height is None or state.base.is_planar(self.base_height)))
+
     def is_free(self, state):
-        if not self.robot.valid(state.joints):
+        if not self.valid(state):
             return False
         environment, self_distance = self.clearances(state)
         return environment > self.margin and self_distance > self.self_margin
 
     def edge_is_free(self, start, end):
-        if not self.robot.valid(start.joints) or not self.is_free(end):
+        if not self.valid(start) or not self.is_free(end):
             return False
         edge = self.edge(start, end)
         env_rate = edge.bound * self.field.lipschitz

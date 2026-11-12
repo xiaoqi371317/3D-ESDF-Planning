@@ -22,6 +22,15 @@ class Pose:
     def relative_rotation(self, target: "Pose") -> np.ndarray:
         return (target.rotation * self.rotation.inv()).as_rotvec()
 
+    def on_plane(self, height: float) -> "Pose":
+        matrix = self.rotation.as_matrix()
+        yaw = np.arctan2(matrix[1, 0], matrix[0, 0])
+        return Pose.at((*self.position[:2], height), Rotation.from_euler("z", yaw))
+
+    def is_planar(self, height: float) -> bool:
+        return (abs(self.position[2] - height) <= 1e-9
+                and np.allclose(self.rotation.as_matrix()[:, 2], (0, 0, 1), atol=1e-9, rtol=0))
+
 
 class Edge:
     def __init__(self, start: Pose, end: Pose, radius: float):

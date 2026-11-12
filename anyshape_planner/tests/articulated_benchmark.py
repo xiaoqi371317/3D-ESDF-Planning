@@ -74,12 +74,15 @@ def kinematics(scene):
 
 
 class FCLReference:
-    def __init__(self, scene):
+    def __init__(self, scene, geometries=None):
         self.scene = scene
         self.robot = scene.robot
         self.request = fcl.CollisionRequest()
-        self.links = [fcl.CollisionObject(fcl.Box(*link.geometry.mesh.extents))
-                      for link in self.robot.links]
+        geometries = {} if geometries is None else geometries
+        self.links = [fcl.CollisionObject(geometries[link.name] if link.name in geometries else
+                                          fcl.Box(*link.geometry.mesh.extents)) for link in self.robot.links]
+        self.cylinders = [(index, geometries[link.name]) for index, link in enumerate(self.robot.links)
+                          if isinstance(geometries.get(link.name), fcl.Cylinder)]
         self.walls = []
         for obstacle in scene.obstacles:
             lo, hi = obstacle.box_bounds
@@ -94,6 +97,9 @@ class FCLReference:
         centers = state.rotation.apply(local_t) + state.position
         centers += (rotations @ self.robot.centers[..., None])[..., 0]
         half = (np.abs(rotations) @ self.robot.half_extents[..., None])[..., 0]
+        for index, cylinder in self.cylinders:
+            axis = np.abs(rotations[index, :, 2])
+            half[index] = cylinder.radius * np.sqrt(np.maximum(0, 1 - axis**2)) + cylinder.lz / 2 * axis
         for link, rotation, center in zip(self.links, rotations, centers):
             link.setTransform(fcl.Transform(rotation, center))
         out = np.any(centers - half <= self.scene.bounds[0]) or np.any(centers + half >= self.scene.bounds[1])

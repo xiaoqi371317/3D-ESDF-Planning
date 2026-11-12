@@ -8,13 +8,14 @@ import viser
 from anyshape_planner.articulated import ArticulatedRobot
 from anyshape_planner.corridor import MODEL
 from anyshape_planner.geometry import Robot, load_mesh
+from anyshape_planner.mobile import MOBILE_SCENE
 from anyshape_planner.scenes import l_mesh
 from anyshape_planner.viz import Demo
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    names = {"window": "窗口穿越", "clutter": "杂乱环境", "corridor": "双臂收缩走廊"}
+    names = {"window": "窗口穿越", "clutter": "杂乱环境", "corridor": "双臂收缩走廊", "mobile": MOBILE_SCENE}
     parser.add_argument("--scene", choices=names, default="window")
     parser.add_argument("--robot", help="Watertight OBJ or STL robot, with vertices in metres")
     parser.add_argument("--urdf", help="Articulated robot URDF with a matching .poses.json file")

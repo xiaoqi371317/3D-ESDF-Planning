@@ -48,15 +48,19 @@ def refine_articulated(path, checker: ArticulatedCollision, iterations=40, cance
     local = [TorchESDF(field) for field in checker.local_fields]
     zeros = angles.new_zeros((1, 6 + angles.shape[1]))
     offsets = angles.new_zeros((len(waypoints) - 2, zeros.shape[1]), requires_grad=True)
+    mask = torch.ones(zeros.shape[1], dtype=angles.dtype)
+    if checker.base_height is not None:
+        mask[2:5] = 0  # Fixed height and zero roll/pitch.
 
     def shortest(delta):
         return torch.where(continuous, torch.atan2(delta.sin(), delta.cos()), delta)
 
     def objective():
-        changes = torch.cat((zeros, offsets, zeros))
+        changes = torch.cat((zeros, offsets, zeros)) * mask
         base = positions + changes[:, :3]
         rotated_axes = _rotate(axes, changes[:, 3:6])
-        joints = angles + changes[:, 6:]
+        requested = angles + changes[:, 6:]
+        joints = torch.where(continuous, requested, torch.clamp(requested, min=low, max=high))
         rotations, translations = robot.fk_torch(joints)
         link_points = torch.cat([cloud @ rotations[:, i].transpose(1, 2) + translations[:, i, None]
                                  for i, cloud in enumerate(points)], dim=1)
@@ -65,7 +69,7 @@ def refine_articulated(path, checker: ArticulatedCollision, iterations=40, cance
         env_penalty = (max(.050, checker.margin + .025) - env_clearance).relu().square().mean()
 
         pair_clearances = []
-        for a, b in checker.pairs:
+        for a, b in checker.dynamic_pairs:
             inverse_a = rotations[:, a].transpose(1, 2)
             relative = inverse_a @ rotations[:, b]
             origin = (inverse_a @ (translations[:, b] - translations[:, a])[..., None])[..., 0]
@@ -77,16 +81,16 @@ def refine_articulated(path, checker: ArticulatedCollision, iterations=40, cance
             distance = torch.minimum(local[a].interpolate(b_in_a).amin(dim=1),
                                      local[b].interpolate(a_in_b).amin(dim=1))
             pair_clearances.append(torch.maximum(gap, distance))
-        self_penalty = angles.new_zeros(())
+        closest = angles.new_full((len(waypoints),), checker.fixed_self_clearance)
         if pair_clearances:
-            closest = torch.stack(pair_clearances).amin(dim=0)
-            self_penalty = (max(.030, checker.self_margin + .015) - closest).relu().square().mean()
+            closest = torch.minimum(closest, torch.stack(pair_clearances).amin(dim=0))
+        self_penalty = (max(.030, checker.self_margin + .015) - closest).relu().square().mean()
 
         rigid = torch.cat((base, robot.radius / np.sqrt(3) * rotated_axes.flatten(1)), dim=1)
         acceleration = rigid.diff(n=2, dim=0).square().sum(dim=1).mean()
         joint_velocity = shortest(joints.diff(dim=0)) * joint_weights
         acceleration += joint_velocity.diff(dim=0).square().sum(dim=1).mean()
-        violations = ((low - joints).relu().square() + (joints - high).relu().square()) * bounded
+        violations = ((low - requested).relu().square() + (requested - high).relu().square()) * bounded
         preference = shortest(joints - nominal).square().sum(dim=1).mean()
         return (acceleration + 100 * env_penalty + 75 * self_penalty
                 + 80 * violations.sum(dim=1).mean() + .008 * preference + .07 * offsets.square().mean())
@@ -107,9 +111,9 @@ def refine_articulated(path, checker: ArticulatedCollision, iterations=40, cance
             if not np.isfinite(cost) or cost >= best_cost - 1e-7:
                 continue
             candidate = [path[0]]
-            for state, change in zip(waypoints[1:-1], offsets.detach().numpy()):
+            for state, change in zip(waypoints[1:-1], (offsets.detach() * mask).numpy()):
                 pose = Pose.at(state.position + change[:3], Rotation.from_rotvec(change[3:6]) * state.rotation)
-                candidate.append(Configuration(pose, state.joints + change[6:]))
+                candidate.append(Configuration(pose, robot.clamp(state.joints + change[6:])))
             candidate.append(path[-1])
             if all(checker.edge_is_free(a, b) for a, b in zip(candidate, candidate[1:])):
                 best_cost, best = cost, candidate

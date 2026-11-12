@@ -28,10 +28,9 @@ def _origin(element):
             Rotation.from_euler("xyz", _vector(origin, "rpy", (0, 0, 0))).as_matrix())
 
 
-def _link_shape(element, directory):
+def _link_shape(element, directory, parts):
     meshes = []
     axis_aligned_box = False
-    parts = element.findall("collision") or element.findall("visual")
     for part in parts:
         geometry = part.find("geometry")
         position, rotation = _origin(part)
@@ -65,6 +64,7 @@ class Link:
     name: str
     geometry: Robot
     obstacle: Obstacle
+    visual: trimesh.Trimesh | None = None
 
 
 @dataclass
@@ -76,6 +76,7 @@ class Joint:
     basis: np.ndarray
     axis: np.ndarray
     dof: int | None
+    prismatic: bool
 
 
 class ArticulatedRobot:
@@ -85,6 +86,7 @@ class ArticulatedRobot:
         self.limits = np.asarray(limits, dtype=float).reshape(-1, 2)
         self.speeds = np.asarray(speeds, dtype=float)
         self.continuous = np.asarray(continuous, dtype=bool)
+        self.prismatic = np.array([joint.prismatic for joint in joints if joint.dof is not None], dtype=bool)
         self.postures = {name: np.asarray(values, dtype=float) for name, values in postures.items()}
         for name, angles in self.postures.items():
             if not self.valid(angles):
@@ -95,7 +97,11 @@ class ArticulatedRobot:
         np.fill_diagonal(distances, 0.0)
         ancestors = np.zeros((count, len(self.speeds)), dtype=bool)
         for joint in joints:
-            distances[joint.parent, joint.child] = distances[joint.child, joint.parent] = np.linalg.norm(joint.offset)
+            offset = joint.offset
+            if joint.prismatic:
+                offset = offset + self.limits[joint.dof, :, None] * (joint.basis @ joint.axis)
+            length = np.linalg.norm(offset, axis=-1).max()
+            distances[joint.parent, joint.child] = distances[joint.child, joint.parent] = length
             ancestors[joint.child] = ancestors[joint.parent]
             if joint.dof is not None:
                 ancestors[joint.child, joint.dof] = True
@@ -107,7 +113,7 @@ class ArticulatedRobot:
         radii = np.linalg.norm(np.abs(self.centers) + self.half_extents, axis=1)
         reach = distances + radii[None, :]
         self.radius = float(reach[0].max())
-        self.joint_radii = np.array([reach[joint.child, ancestors[:, joint.dof]].max()
+        self.joint_radii = np.array([1.0 if joint.prismatic else reach[joint.child, ancestors[:, joint.dof]].max()
                                      for joint in joints if joint.dof is not None])
         self.ancestors = ancestors
         self.reach = reach
@@ -145,7 +151,7 @@ class ArticulatedRobot:
                 axis = _vector(element.find("axis"), "xyz", (1, 0, 0))
                 mode = element.attrib["type"]
                 dof = None
-                if mode in ("revolute", "continuous"):
+                if mode in ("revolute", "continuous", "prismatic"):
                     limit = element.find("limit")
                     lo, hi = (-pi, pi) if mode == "continuous" else (
                         float(limit.attrib["lower"]), float(limit.attrib["upper"]))
@@ -162,11 +168,15 @@ class ArticulatedRobot:
                     raise ValueError(f"Unsupported joint type {mode}.")
                 if element.find("mimic") is not None:
                     raise ValueError("Mimic joints require an independent coordinate mapping.")
-                joints.append(Joint(element.attrib["name"], parent, child, position, basis, axis, dof))
+                joints.append(Joint(element.attrib["name"], parent, child, position, basis, axis, dof,
+                                    mode == "prismatic"))
 
         links = []
         for name in names:
-            mesh, box = _link_shape(elements[name], path.parent)
+            element = elements[name]
+            collisions, visuals = element.findall("collision"), element.findall("visual")
+            mesh, box = _link_shape(element, path.parent, collisions or visuals)
+            visual = _link_shape(element, path.parent, visuals)[0] if collisions and visuals else None
             if box:
                 bounds = mesh.bounds
                 axes = [np.linspace(lo, hi, max(2, int(np.ceil((hi - lo) / sample_pitch))) + 1)
@@ -175,7 +185,7 @@ class ArticulatedRobot:
                 geometry = Robot(mesh, points, float(np.linalg.norm(mesh.vertices, axis=1).max()))
             else:
                 geometry = Robot.from_mesh(mesh, sample_pitch)
-            links.append(Link(name, geometry, Obstacle(mesh, mesh.bounds if box else None)))
+            links.append(Link(name, geometry, Obstacle(mesh, mesh.bounds if box else None), visual))
 
         posture_path = path.with_suffix(".poses.json")
         named = json.loads(posture_path.read_text(encoding="utf-8")) if posture_path.exists() else {}
@@ -201,12 +211,14 @@ class ArticulatedRobot:
         translations = np.empty((len(self.links), 3))
         rotations[0], translations[0] = np.eye(3), 0.0
         for joint in self.joints:
-            rotation = joint.basis
-            if joint.dof is not None:
+            rotation, offset = joint.basis, joint.offset
+            if joint.prismatic:
+                offset = offset + q[joint.dof] * (joint.basis @ joint.axis)
+            elif joint.dof is not None:
                 rotation = rotation @ Rotation.from_rotvec(joint.axis * q[joint.dof]).as_matrix()
             parent = rotations[joint.parent]
             rotations[joint.child] = parent @ rotation
-            translations[joint.child] = parent @ joint.offset + translations[joint.parent]
+            translations[joint.child] = parent @ offset + translations[joint.parent]
         return rotations, translations
 
     def fk_torch(self, q):
@@ -221,14 +233,17 @@ class ArticulatedRobot:
         translations = [q.new_zeros((*q.shape[:-1], 3))]
         for joint in self.joints:
             local = tensor(joint.basis)
-            if joint.dof is not None:
+            offset = tensor(joint.offset)
+            if joint.prismatic:
+                offset = offset + q[..., joint.dof, None] * tensor(joint.basis @ joint.axis)
+            elif joint.dof is not None:
                 x, y, z = joint.axis
                 skew = tensor([[0, -z, y], [z, 0, -x], [-y, x, 0]])
                 angle = q[..., joint.dof, None, None]
                 local = local @ (identity + angle.sin() * skew + (1 - angle.cos()) * (skew @ skew))
             parent = rotations[joint.parent]
             rotations.append(parent @ local)
-            translations.append(parent @ tensor(joint.offset) + translations[joint.parent])
+            translations.append((parent @ offset[..., None])[..., 0] + translations[joint.parent])
         return torch.stack(rotations, dim=-3), torch.stack(translations, dim=-2)
 
     def frozen(self, q):

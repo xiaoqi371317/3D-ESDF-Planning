@@ -25,14 +25,23 @@ class Corridor:
     half_width: float = .37
     half_height: float = .31
     name: str = "双臂收缩走廊"
+    base_height: float | None = None
+    portal_offset: float = 1.75
 
     @cached_property
     def checker(self):
-        return ArticulatedCollision(self.robot, ESDF.build(self.bounds, .02, self.obstacles))
+        return ArticulatedCollision(self.robot, ESDF.build(self.bounds, .02, self.obstacles),
+                                    base_height=self.base_height)
 
     @property
     def portals(self):
-        return tuple(Pose.at((x, 0, 0)) for x in (-1.75, 1.75))
+        return tuple(Pose.at((x, 0, self.base_height or 0))
+                     for x in (-self.portal_offset, self.portal_offset))
+
+    @property
+    def opening_z(self):
+        bottom = -self.half_height if self.base_height is None else self.base_height
+        return bottom, bottom + 2 * self.half_height
 
 
 def corridor(robot: ArticulatedRobot | None = None) -> Corridor:

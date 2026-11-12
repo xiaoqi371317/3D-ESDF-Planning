@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<robot name="mecanum_telescoping_arm">
+  <material name="chassis_blue"><color rgba=".24 .56 .74 1"/></material>
+  <material name="wheel_gray"><color rgba=".25 .30 .36 1"/></material>
+  <material name="arm_gold"><color rgba="1 .67 .21 1"/></material>
+  <link name="base">
+    <collision><origin xyz="0 0 .20"/><geometry><box size="1.20 .56 .20"/></geometry></collision>
+    <visual><origin xyz="0 0 .20"/><geometry><box size="1.20 .56 .20"/></geometry><material name="chassis_blue"/></visual>
+  </link>
+  <link name="wheel_fl">
+    <collision><geometry><cylinder radius=".12" length=".09"/></geometry></collision>
+    <visual><geometry><mesh filename="mecanum_left.obj"/></geometry><material name="wheel_gray"/></visual>
+  </link>
+  <link name="wheel_fr">
+    <collision><geometry><cylinder radius=".12" length=".09"/></geometry></collision>
+    <visual><geometry><mesh filename="mecanum_right.obj"/></geometry><material name="wheel_gray"/></visual>
+  </link>
+  <link name="wheel_rl">
+    <collision><geometry><cylinder radius=".12" length=".09"/></geometry></collision>
+    <visual><geometry><mesh filename="mecanum_right.obj"/></geometry><material name="wheel_gray"/></visual>
+  </link>
+  <link name="wheel_rr">
+    <collision><geometry><cylinder radius=".12" length=".09"/></geometry></collision>
+    <visual><geometry><mesh filename="mecanum_left.obj"/></geometry><material name="wheel_gray"/></visual>
+  </link>
+  <joint name="wheel_fl_mount" type="fixed"><parent link="base"/><child link="wheel_fl"/><origin xyz=".44 .283 .12" rpy="1.5707963267948966 0 0"/></joint>
+  <joint name="wheel_fr_mount" type="fixed"><parent link="base"/><child link="wheel_fr"/><origin xyz=".44 -.283 .12" rpy="1.5707963267948966 0 0"/></joint>
+  <joint name="wheel_rl_mount" type="fixed"><parent link="base"/><child link="wheel_rl"/><origin xyz="-.44 .283 .12" rpy="1.5707963267948966 0 0"/></joint>
+  <joint name="wheel_rr_mount" type="fixed"><parent link="base"/><child link="wheel_rr"/><origin xyz="-.44 -.283 .12" rpy="1.5707963267948966 0 0"/></joint>
+  <link name="mast">
+    <collision><origin xyz="0 0 .19"/><geometry><box size=".15 .14 .38"/></geometry></collision>
+    <visual><origin xyz="0 0 .19"/><geometry><box size=".15 .14 .38"/></geometry><material name="arm_gold"/></visual>
+  </link>
+  <joint name="mast_mount" type="fixed"><parent link="base"/><child link="mast"/><origin xyz="0 0 .24"/></joint>
+  <link name="carriage">
+    <collision><origin xyz="0 0 -.08"/><geometry><box size=".14 .14 .34"/></geometry></collision>
+    <visual><origin xyz="0 0 -.08"/><geometry><box size=".14 .14 .34"/></geometry><material name="arm_gold"/></visual>
+  </link>
+  <joint name="lift" type="prismatic">
+    <parent link="mast"/><child link="carriage"/><origin xyz="0 0 .26"/><axis xyz="0 0 1"/>
+    <limit lower=".10" upper=".34" velocity=".22" effort="100"/>
+  </joint>
+  <link name="shoulder_mount">
+    <collision><origin xyz="-.025 -.070 .025"/><geometry><box size=".12 .16 .055"/></geometry></collision>
+    <visual><origin xyz="-.025 -.070 .025"/><geometry><box size=".12 .16 .055"/></geometry><material name="arm_gold"/></visual>
+  </link>
+  <joint name="shoulder_mount_fixed" type="fixed">
+    <parent link="carriage"/><child link="shoulder_mount"/><origin xyz=".10 .145 .04"/>
+  </joint>
+  <link name="upper_arm">
+    <collision><origin xyz=".225 0 0"/><geometry><box size=".45 .08 .11"/></geometry></collision>
+    <visual><origin xyz=".225 0 0"/><geometry><box size=".45 .08 .11"/></geometry><material name="arm_gold"/></visual>
+  </link>
+  <joint name="shoulder" type="revolute">
+    <parent link="shoulder_mount"/><child link="upper_arm"/><origin rpy="0 0 1.5707963267948966"/><axis xyz="0 0 1"/>
+    <limit lower="-.20" upper="1.80" velocity="1.35" effort="30"/>
+  </joint>
+  <link name="forearm">
+    <collision><origin xyz=".21 0 0"/><geometry><box size=".42 .072 .088"/></geometry></collision>
+    <visual><origin xyz=".21 0 0"/><geometry><box size=".42 .072 .088"/></geometry><material name="arm_gold"/></visual>
+  </link>
+  <joint name="elbow" type="revolute">
+    <parent link="upper_arm"/><child link="forearm"/><origin xyz=".45 0 0"/><axis xyz="0 0 1"/>
+    <limit lower="-1.15" upper=".70" velocity="1.50" effort="20"/>
+  </joint>
+  <link name="gripper">
+    <collision><origin xyz=".04 0 0"/><geometry><box size=".08 .10 .08"/></geometry></collision>
+    <visual><origin xyz=".04 0 0"/><geometry><box size=".08 .10 .08"/></geometry><material name="arm_gold"/></visual>
+  </link>
+  <joint name="gripper_mount" type="fixed"><parent link="forearm"/><child link="gripper"/><origin xyz=".42 0 0"/></joint>
+</robot>
