@@ -1,0 +1,24 @@
+{
+  "default_passage_joints_m_rad": [
+    0.19486781650036447,
+    1.209772324605404,
+    0.3692692212441564
+  ],
+  "low_passage_joints_m_rad": [
+    0.13366749815714465,
+    1.209772324605404,
+    0.3692692212441564
+  ],
+  "wide_opening_keeps_nominal": true,
+  "trajectory_seconds": 12.540402320363492,
+  "interior_base_speeds_m_s": [
+    0.4025987816537774,
+    0.4099003645403104
+  ],
+  "max_curve_deviation_m": 0.05046482649576935,
+  "minimum_environment_m": 0.03211457598887909,
+  "minimum_self_m": 0.037578575861069066,
+  "peak_executed_wheel_rad_s": 7.891186458200864,
+  "continuous_velocity_and_acceleration": true,
+  "fcl_5mm_both_openings": true
+}

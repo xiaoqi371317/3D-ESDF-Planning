@@ -55,14 +55,15 @@ class MobileCorridor(Corridor):
     drive: MecanumDrive = MecanumDrive()
 
 
-def mobile_corridor():
+def mobile_corridor(*, width=.78, height=.83):
     robot = ArticulatedRobot.from_urdf(MOBILE_MODEL, sample_pitch=.05)
     bounds = np.array([[-3.76, -1.50, -.12], [3.76, 1.50, 1.46]])
-    obstacles = [Obstacle.box((-1.19, -1.52, -.14), (1.19, -.39, 1.48)),
-                 Obstacle.box((-1.19, .39, -.14), (1.19, 1.52, 1.48)),
-                 Obstacle.box((-1.19, -.39, .83), (1.19, .39, 1.48))]
+    half = width / 2
+    obstacles = [Obstacle.box((-1.19, -1.52, -.14), (1.19, -half, 1.48)),
+                 Obstacle.box((-1.19, half, -.14), (1.19, 1.52, 1.48)),
+                 Obstacle.box((-1.19, -half, height), (1.19, half, 1.48))]
     nominal = robot.postures["nominal"]
     start = Configuration(Pose.at((-2.70, -.24, 0), Rotation.from_euler("z", -9, degrees=True)), nominal)
     goal = Configuration(Pose.at((2.70, .20, 0), Rotation.from_euler("z", 8, degrees=True)), nominal)
-    return MobileCorridor(robot, bounds, obstacles, start, goal, half_length=1.19, half_width=.39,
-                          half_height=.415, name=MOBILE_SCENE, base_height=0.0, portal_offset=2.04)
+    return MobileCorridor(robot, bounds, obstacles, start, goal, half_length=1.19, half_width=half,
+                          half_height=height / 2, name=MOBILE_SCENE, base_height=0.0, portal_offset=2.04)

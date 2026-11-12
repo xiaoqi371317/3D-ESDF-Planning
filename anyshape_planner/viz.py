@@ -21,6 +21,8 @@ from .geometry import Robot
 from .mobile import MOBILE_SCENE, MobileCorridor, mobile_corridor
 from .planner import PlanningError, RRTConnect
 from .scenes import clutter, window
+from .trajectory import PlanarTrajectory, TrajectoryPlayback
+from .viz_trajectory import JointTrajectoryPlots
 
 
 def _move(handle, pose: Pose):
@@ -44,6 +46,7 @@ class Demo:
         self.cancel = Event()
         self.following = None
         self.path = None
+        self.trajectory = None
         self.path_handle = None
         self.obstacle_handles = []
         self.body_parts = []
@@ -78,6 +81,7 @@ class Demo:
         go_button = gui.add_button("规划并执行", color="teal")
         reset_button = gui.add_button("重置机器人与目标")
         self.status = gui.add_markdown("")
+        self.joint_plots = JointTrajectoryPlots(gui)
 
         self.chooser.on_update(lambda event: self.events.put(("scene", event.target.value)))
         plan_button.on_click(lambda _: self.events.put(("plan", False)))
@@ -169,6 +173,8 @@ class Demo:
         self.pending = None
         self.following = None
         self.path = None
+        self.trajectory = None
+        self.joint_plots.clear()
         self.execute_button.disabled = True
         if self.path_handle is not None:
             self.path_handle.remove()
@@ -235,10 +241,11 @@ class Demo:
                 thickness=2, thickness_units="screen"))
         self._reset()
 
-    def _solve(self, planner, start, goal, free, tolerance, optimize, cancelled):
+    def _solve(self, planner, start, goal, free, tolerance, optimize, drive, cancelled):
         clock = perf_counter()
         plan = planner.plan(start, goal, free_orientation=free,
                             position_tolerance=tolerance, cancelled=cancelled)
+        original = plan
         checker = planner.checker
         articulated = isinstance(planner, ArticulatedPlanner)
         margins = (checker.margin, checker.self_margin) if articulated else (checker.margin,)
@@ -266,11 +273,21 @@ class Demo:
                 refinement_status = " · 优化通过"
             else:
                 refinement_status = " · 保留原路径"
-        if minimum is None:
+        trajectory = None
+        if drive is not None:
+            try:
+                trajectory, minimum = PlanarTrajectory.fit(plan.path, checker, drive, cancelled)
+            except PlanningError:
+                if plan is original or cancelled():
+                    raise
+                plan = original
+                refinement_status = " · 回退原路点"
+                trajectory, minimum = PlanarTrajectory.fit(plan.path, checker, drive, cancelled)
+        elif minimum is None:
             minimum = dense(plan.path)
         if not clear(minimum):
             raise PlanningError("Dense collision verification failed.")
-        return plan, minimum, perf_counter() - clock, refinement_status
+        return plan, minimum, perf_counter() - clock, refinement_status, trajectory
 
     def _plan(self, execute: bool, retarget: bool = False):
         self._stop()
@@ -278,7 +295,8 @@ class Demo:
         self.auto_execute = execute
         goal = self._target_pose()
         if self.articulated:
-            planner = ArticulatedPlanner(self.checker, self.scene.bounds, self.scene.portals, self.seed)
+            planner = ArticulatedPlanner(self.checker, self.scene.bounds, self.scene.portals, self.seed,
+                                         adaptive_posture=self.mobile)
             goal = Configuration(goal, self._goal_angles())
             detail = "SE(2) × 关节空间" if self.mobile else "SE(3) × 关节空间"
         else:
@@ -288,7 +306,8 @@ class Demo:
         self._report("正在重新规划" if retarget else "正在规划", detail)
         self.pending = self.workers.submit(self._solve, planner, self.pose, goal,
                                            self.free_orientation.value, self.tolerance.value,
-                                           self.optimize.value, self.cancel.is_set)
+                                           self.optimize.value, self.scene.drive if self.mobile else None,
+                                           self.cancel.is_set)
 
     def _clearance_text(self, environment, self_distance=None):
         if self_distance is None:
@@ -296,15 +315,23 @@ class Demo:
         self_text = f"**{100 * self_distance:.2f} cm**" if np.isfinite(self_distance) else "无检测对"
         return f"环境 **{100 * environment:.2f} cm** · 自碰撞 {self_text}"
 
-    def _show_plan(self, plan, minimum, seconds: float, refinement_status: str):
+    def _show_plan(self, plan, minimum, seconds: float, refinement_status: str, trajectory):
         self.path = plan.path
+        self.trajectory = trajectory
         positions = np.array([pose.position for pose in plan.path])
+        timing = ""
+        if trajectory is not None:
+            times = np.linspace(0, trajectory.duration, 301)
+            positions = np.column_stack((trajectory.spline(times)[:, :2], np.full(len(times), .018)))
+            self.joint_plots.show(trajectory, times)
+            mode = "C² 连续轨迹" if trajectory.tangent_scale > 0 else "C² 保守停点"
+            timing = f"  \n{mode} · 执行 {trajectory.duration:.2f} s"
         lines = np.stack((positions[:-1], positions[1:]), axis=1)
         self.path_handle = self.server.scene.add_line_segments(
             "/path", lines, (60, 244, 181), thickness=4, thickness_units="screen")
         method = f" · {plan.method}" if self.articulated else ""
         self.last_plan_summary = (f"{len(plan.path)} 个路点 · {seconds:.2f} s{method}{refinement_status}  \n"
-                                  f"5 mm 复检净空 {self._clearance_text(*minimum)}")
+                                  f"5 mm 复检净空 {self._clearance_text(*minimum)}{timing}")
         if self.auto_execute:
             self._execute()
         else:
@@ -314,7 +341,8 @@ class Demo:
     def _execute(self):
         if self.path is not None:
             self.execute_button.disabled = True
-            self.following = Follower(self.path, self.checker, drive=self.scene.drive if self.mobile else None)
+            self.following = (TrajectoryPlayback(self.trajectory) if self.trajectory is not None else
+                              Follower(self.path, self.checker))
             self.peak_wheel_speed = 0.0
             self.path = None
             self.last_ui_update = 0.0
@@ -340,10 +368,12 @@ class Demo:
         wheels = ""
         if self.mobile:
             drive = self.scene.drive
-            speeds = drive.between(previous.pose.base, sample.pose.base, dt)
+            speeds = drive.between(previous.pose.base, sample.pose.base, sample.time - previous.time)
             self.peak_wheel_speed = max(self.peak_wheel_speed, np.abs(speeds).max())
             wheels = f"  \n峰值轮速 **{self.peak_wheel_speed:.2f} / {drive.wheel_speed_limit:.0f} rad/s**"
         if self.following.done:
+            if self.trajectory is not None:
+                self.joint_plots.set_time(sample.time, self.trajectory.duration)
             position, angle = self.following.terminal_error
             minimum = min(state.clearance for state in self.following.samples)
             minimum_self = min(state.self_clearance for state in self.following.samples) if self.articulated else None
@@ -355,12 +385,15 @@ class Demo:
                 joints = f"  \n旋转关节最大误差 **{degrees:.2f}°**"
                 if robot.prismatic.any():
                     joints += f" · 直线关节 **{1000 * error[robot.prismatic].max():.2f} mm**"
+            label = "执行净空" if self.trajectory is not None else "跟踪净空"
             self._report("已到达目标", f"{self.last_plan_summary}  \n"
-                         f"跟踪净空 {self._clearance_text(minimum, minimum_self)}  \n"
+                         f"{label} {self._clearance_text(minimum, minimum_self)}  \n"
                          f"终点误差 **{1000 * position:.2f} mm / {np.rad2deg(angle):.2f}°**{joints}{wheels}")
             self.following = None
         elif sample.time - self.last_ui_update >= .16:
             self.last_ui_update = sample.time
+            if self.trajectory is not None:
+                self.joint_plots.set_time(sample.time, self.trajectory.duration)
             clearance = self._clearance_text(sample.clearance, sample.self_clearance if self.articulated else None)
             angles = ""
             if self.articulated:

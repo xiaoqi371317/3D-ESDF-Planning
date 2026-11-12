@@ -14,7 +14,15 @@ python run_demo.py --scene mobile --port 8082 --open
 
 ![麦克纳姆底盘带折叠臂通过低矮走廊](assets/mobile-corridor.gif)
 
-走廊宽 0.78 m、高 0.83 m、长 2.38 m。整机展开时宽约 1.42 m、高 0.94 m，降高并折臂后宽约 0.66 m、高 0.70 m。底盘在入口前横移对正，穿越后恢复展开姿态。界面显示升降位移、肩肘角度、净空和峰值轮速。
+走廊宽 0.78 m、高 0.83 m、长 2.38 m。整机展开时宽约 1.42 m、高 0.94 m，预设 `compact` 姿态宽约 0.66 m、高 0.70 m。底盘在入口前横移对正，穿越后恢复展开姿态。界面显示升降位移、肩肘角度、净空和峰值轮速。
+
+当前演示先检查展开姿态能否通行。需要变形时，规划器用入口和出口作引导，在关节限位内搜索能通过的升降和折臂姿态。`compact` 姿态作为搜索候选和回退。上面的 v1.2 动图和原始测试记录使用了固定的 `compact` 引导姿态。
+
+规划完成后，绿色线显示实际执行的五次样条。基座位置、偏航和各关节的速度与加速度在路点连续，样条通过连续碰撞检查和 5 mm 复检后才可执行。曲线切角导致净空不足时，规划器减小切向速度，必要时在路点停稳。界面的 **关节轨迹** 显示升降、肩关节、肘关节的位置和速度，以及四个轮子的角速度。**下载轨迹 CSV** 导出同一条轨迹。
+
+![默认走廊的关节轨迹与四轮角速度](assets/mobile-joint-trajectories.png)
+
+[默认走廊的示例轨迹 CSV](assets/mobile-planned-trajectory.csv)
 
 ```powershell
 python -m pip install -r requirements-articulated-tests.txt
@@ -22,6 +30,12 @@ python -m anyshape_planner.tests.mobile_benchmark --output mobile_results.json
 ```
 
 测试包括仅升降、仅折臂、关节全锁定与联合规划的对照，以及平面约束、FCL 密采样复检、关节和轮速限制。[移动机械臂测试数据](mobile_results.json)
+
+```powershell
+python -m anyshape_planner.tests.trajectory_benchmark --output mobile_trajectory_results.json
+```
+
+新轨迹测试覆盖默认开口、降低顶板和扩大开口三种情况，并核对关节与轮速限制、路点两侧的速度和加速度，以及平滑后轨迹的 FCL 密采样结果。[新轨迹测试数据](mobile_trajectory_results.json)
 
 ## 浮动基座与双臂走廊
 

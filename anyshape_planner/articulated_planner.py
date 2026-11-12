@@ -15,10 +15,11 @@ class ArticulatedPlan:
     path: list[Configuration]
     iterations: int
     method: str
+    passage_joints: np.ndarray | None = None
 
 
 class ArticulatedPlanner:
-    def __init__(self, checker: ArticulatedCollision, bounds, portals=(), seed=0):
+    def __init__(self, checker: ArticulatedCollision, bounds, portals=(), seed=0, *, adaptive_posture=False):
         self.checker = checker
         self.robot = checker.robot
         self.bounds = bounds
@@ -26,6 +27,7 @@ class ArticulatedPlanner:
         self.rng = np.random.default_rng(seed)
         self.nominal = self.robot.postures["nominal"]
         self.compact = self.robot.postures["compact"]
+        self.adaptive_posture = adaptive_posture
 
     def _project(self, pose):
         height = self.checker.base_height
@@ -69,10 +71,56 @@ class ArticulatedPlanner:
                 return pose
         raise PlanningError("未找到可用的紧凑姿态入口。")
 
-    def _base_guide(self, start, goal, cancelled):
-        if self.checker.self_clearance(self.compact) <= self.checker.self_margin:
+    def _passage_posture(self, start, goal, cancelled):
+        if not self.adaptive_posture or len(self.portals) != 2:
+            return None
+        a, b = self.portals
+        center = Pose.at((a.position + b.position) / 2, a.rotation)
+        if not min(start.position[0], goal.position[0]) <= center.position[0] <= max(start.position[0], goal.position[0]):
+            return None
+
+        def feasible(q):
+            if cancelled():
+                raise PlanningError("Planning cancelled.")
+            environment, self_distance = self.checker.clearances(Configuration(center, q))
+            return environment > self.checker.margin + .028 and self_distance > self.checker.self_margin + .008
+
+        if feasible(self.nominal):
+            return self.nominal
+
+        weights = self.robot.joint_radii
+
+        def effort(q):
+            return np.linalg.norm(weights * self.robot.delta(self.nominal, q))
+
+        # The compact posture is one feasible seed. Joint-space candidates and
+        # coordinate refinement let the opening determine the actual posture.
+        blend = self.robot.delta(self.nominal, self.compact)
+        candidates = [self.robot.clamp(self.nominal + alpha * blend) for alpha in np.linspace(.15, 1, 12)]
+        candidates.extend(self.rng.uniform(*self.robot.limits.T, size=(180, len(weights))))
+        best = next((q for q in sorted(candidates, key=effort) if feasible(q)), None)
+        if best is None:
+            return None
+        for _ in range(2):
+            for index in np.argsort(-np.abs(weights * self.robot.delta(best, self.nominal))):
+                offset = self.robot.delta(best, self.nominal)[index]
+                lo, hi = 0.0, 1.0
+                source = best.copy()
+                for _ in range(7):
+                    fraction = (lo + hi) / 2
+                    candidate = source.copy()
+                    candidate[index] += offset * fraction
+                    candidate = self.robot.clamp(candidate)
+                    if feasible(candidate):
+                        lo, best = fraction, candidate
+                    else:
+                        hi = fraction
+        return best
+
+    def _base_guide(self, start, goal, posture, cancelled):
+        if self.checker.self_clearance(posture) <= self.checker.self_margin:
             raise PlanningError("紧凑姿态发生自碰撞。")
-        fixed = CollisionChecker(self.robot.frozen(self.compact), self.checker.field, self.checker.margin)
+        fixed = CollisionChecker(self.robot.frozen(posture), self.checker.field, self.checker.margin)
         left, right = sorted((start.position[0], goal.position[0]))
         portals = sorted((p for p in self.portals if left < p.position[0] < right),
                          key=lambda p: p.position[0], reverse=start.position[0] > goal.position[0])
@@ -97,7 +145,7 @@ class ArticulatedPlanner:
             segment = guide.plan(source, target, max_iterations=520, cancelled=cancelled)
             path.extend(segment.path[1:])
             iterations += segment.iterations
-        return [Configuration(base, self.compact) for base in path], iterations
+        return [Configuration(base, posture) for base in path], iterations
 
     def _search(self, start, goals, guide, max_iterations, cancelled):
         edges = [self.checker.edge(a, b) for a, b in zip(guide, guide[1:])]
@@ -134,8 +182,9 @@ class ArticulatedPlanner:
         if not self.checker.is_free(start):
             raise PlanningError("起始构型发生碰撞。")
         goals = self._targets(start, goal, free_orientation, position_tolerance)
-        if not force_full and not any(min(start.position[0], goals[0].position[0]) < p.position[0]
-                                     < max(start.position[0], goals[0].position[0]) for p in self.portals):
+        between_portals = any(min(start.position[0], goals[0].position[0]) < p.position[0]
+                              < max(start.position[0], goals[0].position[0]) for p in self.portals)
+        if not force_full and (self.adaptive_posture or not between_portals):
             for target in goals:
                 if self.checker.edge_is_free(start, target):
                     return ArticulatedPlan([start, target], 0, "直接连接")
@@ -144,21 +193,27 @@ class ArticulatedPlanner:
         for target in goals:
             if cancelled():
                 raise PlanningError("Planning cancelled.")
-            try:
-                guide, base_iterations = self._base_guide(start, target, cancelled)
-                reference = [start, *guide, target]
-                if force_full:
-                    guide = reference
-                    break
-                left = self._search(start, [guide[0]], reference[:2], 420, cancelled)
-                right = self._search(guide[-1], [target], reference[-2:], 420, cancelled)
-                middle = shortcut(guide, self.checker.edge_is_free, self.rng, cancelled, attempts=24)
-                path = left.path + middle[1:] + right.path[1:]
-                if all(self.checker.edge_is_free(a, b) for a, b in zip(path, path[1:])):
-                    return ArticulatedPlan(path, base_iterations + left.iterations + right.iterations,
-                                           "紧凑姿态引导")
-            except PlanningError:
-                if cancelled():
-                    raise
+            adaptive = self._passage_posture(start, target, cancelled)
+            choices = [(self.compact, False)] if adaptive is None else [(adaptive, True), (self.compact, False)]
+            for posture, automatic in choices:
+                try:
+                    guide, base_iterations = self._base_guide(start, target, posture, cancelled)
+                    reference = [start, *guide, target]
+                    if force_full:
+                        guide = reference
+                        break
+                    budget = 90 if automatic else 420
+                    left = self._search(start, [guide[0]], reference[:2], budget, cancelled)
+                    right = self._search(guide[-1], [target], reference[-2:], budget, cancelled)
+                    middle = shortcut(guide, self.checker.edge_is_free, self.rng, cancelled, attempts=24)
+                    path = left.path + middle[1:] + right.path[1:]
+                    if all(self.checker.edge_is_free(a, b) for a, b in zip(path, path[1:])):
+                        return ArticulatedPlan(path, base_iterations + left.iterations + right.iterations,
+                                               "ESDF 搜索通行姿态" if automatic else "紧凑姿态引导", posture)
+                except PlanningError:
+                    if cancelled():
+                        raise
+            if force_full and guide:
+                break
         plan = self._search(start, goals, guide, max_iterations, cancelled)
         return ArticulatedPlan(plan.path, base_iterations + plan.iterations, "全维 RRT-Connect")
