@@ -20,16 +20,19 @@ class Plan:
 
 
 class Tree:
-    def __init__(self, roots: list[Pose]):
+    def __init__(self, roots, joint_weights=None, continuous=None):
         self.poses = list(roots)
         self.parents = [-1] * len(roots)
-        self.keys = np.empty((max(128, len(roots)), 7))
+        self.joint_weights = joint_weights
+        self.continuous = continuous
+        count = 0 if joint_weights is None else len(joint_weights)
+        self.keys = np.empty((max(128, len(roots)), 7 + count))
         for index, pose in enumerate(roots):
             self.keys[index] = self.key(pose)
 
-    @staticmethod
-    def key(pose: Pose):
-        return np.r_[pose.position, pose.rotation.as_quat()]
+    def key(self, pose):
+        rigid = np.r_[pose.position, pose.rotation.as_quat()]
+        return rigid if self.joint_weights is None else np.r_[rigid, pose.joints]
 
     def add(self, pose: Pose, parent: int) -> int:
         index = len(self.poses)
@@ -43,9 +46,14 @@ class Tree:
     def nearest(self, target: Pose, radius: float) -> int:
         keys = self.keys[:len(self.poses)]
         translation = np.linalg.norm(keys[:, :3] - target.position, axis=1)
-        dots = np.sum(keys[:, 3:] * target.rotation.as_quat(), axis=1)
+        dots = np.sum(keys[:, 3:7] * target.rotation.as_quat(), axis=1)
         angle = 2 * np.arccos(np.clip(np.abs(dots), 0, 1))
-        return int(np.argmin(translation + radius * angle))
+        distance = translation + radius * angle
+        if self.joint_weights is not None:
+            delta = keys[:, 7:] - target.joints
+            delta[:, self.continuous] = (delta[:, self.continuous] + np.pi) % (2 * np.pi) - np.pi
+            distance += np.abs(delta) @ self.joint_weights
+        return int(np.argmin(distance))
 
     def branch(self, index: int) -> list[Pose]:
         poses = []
@@ -53,6 +61,72 @@ class Tree:
             poses.append(self.poses[index])
             index = self.parents[index]
         return poses[::-1]
+
+
+def shortcut(path, edge_is_free, rng, cancelled, attempts=90):
+    checked = set()
+    for _ in range(attempts):
+        if cancelled():
+            raise PlanningError("Planning cancelled.")
+        if len(path) < 3:
+            break
+        i, j = sorted(rng.choice(len(path), 2, replace=False))
+        if j - i <= 1 or (id(path[i]), id(path[j])) in checked:
+            continue
+        checked.add((id(path[i]), id(path[j])))
+        if edge_is_free(path[i], path[j]):
+            path = path[:i + 1] + path[j:]
+    return path
+
+
+def connect_trees(start, roots, radius, rng, sample, make_edge, edge_is_free,
+                  max_iterations, cancelled, step=.40, joint_weights=None, continuous=None):
+    def extend(tree, target, parent):
+        source = tree.poses[parent]
+        edge = make_edge(source, target)
+        if edge.bound == 0.0:
+            return parent, True
+        reached = edge.bound <= step
+        next_pose = target if reached else edge.at(step / edge.bound)
+        if not edge_is_free(source, next_pose):
+            return None, False
+        return tree.add(next_pose, parent), reached
+
+    for root in roots:
+        if cancelled():
+            raise PlanningError("Planning cancelled.")
+        if edge_is_free(start, root):
+            return Plan([start, root], 0)
+
+    front = Tree([start], joint_weights, continuous)
+    back = Tree(roots, joint_weights, continuous)
+    front_is_start = True
+    for iteration in range(1, max_iterations + 1):
+        if cancelled():
+            raise PlanningError("Planning cancelled.")
+        choice = rng.random()
+        if choice < .08:
+            root_count = len(roots) if front_is_start else 1
+            target = back.poses[int(rng.integers(root_count))]
+        else:
+            target = sample(choice)
+        index, _ = extend(front, target, front.nearest(target, radius))
+        if index is not None:
+            meeting = front.poses[index]
+            other = back.nearest(meeting, radius)
+            while not cancelled():
+                other, reached = extend(back, meeting, other)
+                if other is None:
+                    break
+                if reached:
+                    start_side, goal_side = front.branch(index), back.branch(other)
+                    if not front_is_start:
+                        start_side, goal_side = goal_side, start_side
+                    path = start_side + goal_side[-2::-1]
+                    return Plan(path, iteration)
+        front, back = back, front
+        front_is_start = not front_is_start
+    raise PlanningError(f"No path after {max_iterations} iterations.")
 
 
 class RRTConnect:
@@ -90,28 +164,6 @@ class RRTConnect:
             raise PlanningError("No collision-free pose was found in the goal region.")
         return roots
 
-    def _extend(self, tree: Tree, target: Pose, step: float, parent: int):
-        start = tree.poses[parent]
-        edge = Edge(start, target, self.radius)
-        if edge.bound == 0.0:
-            return parent, True
-        reached = edge.bound <= step
-        next_pose = target if reached else edge.at(step / edge.bound)
-        if not self.checker.edge_is_free(start, next_pose):
-            return None, False
-        return tree.add(next_pose, parent), reached
-
-    def _shortcut(self, path: list[Pose], cancelled: Callable[[], bool]) -> list[Pose]:
-        for _ in range(90):
-            if cancelled():
-                raise PlanningError("Planning cancelled.")
-            if len(path) < 3:
-                break
-            i, j = sorted(self.rng.choice(len(path), 2, replace=False))
-            if j - i > 1 and self.checker.edge_is_free(path[i], path[j]):
-                path = path[:i + 1] + path[j:]
-        return path
-
     def plan(self, start: Pose, goal: Pose, *, free_orientation: bool = False,
              position_tolerance: float = 0.0, max_iterations: int = 2600,
              cancelled: Callable[[], bool] = lambda: False) -> Plan:
@@ -120,38 +172,13 @@ class RRTConnect:
         if not self.checker.is_free(start):
             raise PlanningError("The start pose is in collision.")
         roots = self._goal_roots(start, goal, free_orientation, position_tolerance)
-        for root in roots:
-            if self.checker.edge_is_free(start, root):
-                return Plan([start, root], 0)
 
-        front, back = Tree([start]), Tree(roots)
-        front_is_start = True
-        step = .40
-        for iteration in range(1, max_iterations + 1):
-            if cancelled():
-                raise PlanningError("Planning cancelled.")
-            choice = self.rng.random()
-            if choice < .08:
-                root_count = len(roots) if front_is_start else 1
-                target = back.poses[int(self.rng.integers(root_count))]
-            elif choice < .40 and self.guide is not None:
-                target = self.guide(self.rng)
-            else:
-                target = Pose.at(self.rng.uniform(*self.bounds), Rotation.random(random_state=self.rng))
-            index, _ = self._extend(front, target, step, front.nearest(target, self.radius))
-            if index is not None:
-                meeting = front.poses[index]
-                other = back.nearest(meeting, self.radius)
-                while not cancelled():
-                    other, reached = self._extend(back, meeting, step, other)
-                    if other is None:
-                        break
-                    if reached:
-                        start_side, goal_side = front.branch(index), back.branch(other)
-                        if not front_is_start:
-                            start_side, goal_side = goal_side, start_side
-                        path = start_side + goal_side[-2::-1]
-                        return Plan(self._shortcut(path, cancelled), iteration)
-            front, back = back, front
-            front_is_start = not front_is_start
-        raise PlanningError(f"No path after {max_iterations} iterations.")
+        def sample(choice):
+            if choice < .40 and self.guide is not None:
+                return self.guide(self.rng)
+            return Pose.at(self.rng.uniform(*self.bounds), Rotation.random(random_state=self.rng))
+
+        plan = connect_trees(start, roots, self.radius, self.rng, sample,
+                             lambda a, b: Edge(a, b, self.radius), self.checker.edge_is_free,
+                             max_iterations, cancelled)
+        return Plan(shortcut(plan.path, self.checker.edge_is_free, self.rng, cancelled), plan.iterations)

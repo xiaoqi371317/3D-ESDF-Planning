@@ -1,8 +1,34 @@
-# 6-DoF 刚体路径规划演示
+# 3D ESDF 路径规划演示
 
 用 Python、ESDF 和 SE(3) RRT-Connect 规划网格机器人的位姿路径，通过 viser 在浏览器里拖动目标并执行运动学仿真。默认场景中，L 形机器人在初始姿态下沿窗口短边展开 1.34 m，窗口宽 0.80 m、高 0.88 m。墙面覆盖工作空间截面，机器人需要旋转才能穿过窗口。
 
 ![L 形机器人旋转穿过窗口](assets/window-demo.gif)
+
+## 浮动基座与双臂走廊
+
+双臂场景有 6 个基座自由度和 4 个旋转关节。展开宽度为 1.84 m，收缩后约 0.62 m，走廊宽 0.74 m、高 0.62 m。基座从房间接近走廊时双臂收缩，穿过后重新展开。
+
+```powershell
+python -m pip install -r requirements.txt
+python run_demo.py --scene corridor --open
+```
+
+![双臂机器人收缩穿过走廊](assets/corridor-demo.gif)
+
+点击 **规划并执行**。面板显示关节角、环境净空和自碰撞净空，可拖动手柄修改目标基座位姿，并在 **目标关节姿态** 中选择展开或收缩。启动参数 `--port` 可更改监听端口。
+
+`--urdf` 可加载带旋转、连续旋转或固定关节的树形机器人。几何从 `collision` 读取，也可使用 `visual` 几何，支持基本几何体和文件网格。网格文件路径以 URDF 所在目录为基准。同名 `.poses.json` 用关节名指定 `nominal`、`compact` 两组弧度值，可参考 [双臂 URDF](anyshape_planner/models/dual_arm.urdf) 和 [姿态配置](anyshape_planner/models/dual_arm.poses.json)。`--sample-pitch` 可调整几何采样间距，双臂场景的默认值为 0.05 m。连续推进约束基座平移、旋转及所有关节下游点位移。自碰撞使用 link 局部 ESDF，对 URDF 相邻 link 应用允许碰撞矩阵。
+
+```powershell
+python -m pip install -r requirements-articulated-tests.txt
+python -m anyshape_planner.tests.articulated_benchmark --stage all --output articulated_results.json
+```
+
+10,000 个随机构型与 FCL 对拍的环境和自碰撞合并判定一致率为 99.89%，共 1 个漏检。双臂收缩规划 20/20 成功，中位规划耗时 0.67 s，5 mm 密采样的环境和自碰撞最小净空分别为 5.25 cm 和 4.11 cm。锁定展开姿态时，躯干和双臂在走廊截面内的投影尺寸约束使通行不可行。
+
+20 次规划使用 20 个种子扰动房间内的起终点，并另测一次全维 RRT-Connect。走廊内的姿态指标按基座位于通道内统计，走廊外指标按整机包围球已离开通道统计。净空与对拍结果取决于本次几何和采样分辨率。[双臂测试数据](articulated_results.json)
+
+FK 用 yourdfpy 交叉验证。 [yourdfpy 项目](https://github.com/clemense/yourdfpy)
 
 ## 启动
 

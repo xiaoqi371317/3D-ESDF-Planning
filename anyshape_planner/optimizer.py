@@ -28,6 +28,23 @@ def _rotate(vectors: torch.Tensor, rotvecs: torch.Tensor) -> torch.Tensor:
             + .5 * torch.sinc(theta / (2 * torch.pi)).square() * torch.cross(axes, cross, dim=-1))
 
 
+class TorchESDF:
+    def __init__(self, field):
+        self.volume = torch.as_tensor(field.values.transpose(2, 1, 0).copy())[None, None]
+        self.lower = torch.as_tensor(field.origin, dtype=self.volume.dtype)
+        self.upper = torch.as_tensor(field.high, dtype=self.volume.dtype)
+        self.correction = field.correction
+
+    def interpolate(self, points):
+        normalized = 2 * (points - self.lower) / (self.upper - self.lower) - 1
+        return (grid_sample(self.volume, normalized[None, :, :, None], padding_mode="border",
+                            align_corners=True)[0, 0, :, :, 0] - self.correction)
+
+    def query(self, points):
+        boundary = torch.minimum(points - self.lower, self.upper - points).amin(dim=-1)
+        return torch.minimum(self.interpolate(points), boundary)
+
+
 def refine(path: list[Pose], checker: CollisionChecker, iterations: int = 45,
            cancelled: Callable[[], bool] = lambda: False) -> Refinement:
     if len(path) < 2 or iterations < 0:
@@ -48,9 +65,7 @@ def refine(path: list[Pose], checker: CollisionChecker, iterations: int = 45,
     body_points = tensor(checker.robot.points)
     base_points = body_points @ rotations.transpose(1, 2)
     base_axes = rotations.transpose(1, 2)
-    field = checker.field
-    volume = tensor(field.values.transpose(2, 1, 0).copy())[None, None]
-    lower, upper = tensor(field.origin), tensor(field.high)
+    field = TorchESDF(checker.field)
     safe_distance = max(.045, checker.margin + .025)
     zeros = torch.zeros((1, 6))
     offsets = torch.zeros((len(waypoints) - 2, 6), requires_grad=True)
@@ -62,11 +77,7 @@ def refine(path: list[Pose], checker: CollisionChecker, iterations: int = 45,
         centers = positions + changes[:, :3]
         axes = _rotate(base_axes, changes[:, 3:])
         points = _rotate(base_points, changes[:, 3:]) + centers[:, None, :]
-        normalized = 2 * (points - lower) / (upper - lower) - 1
-        distance = grid_sample(volume, normalized[None, :, :, None], padding_mode="border",
-                               align_corners=True)[0, 0, :, :, 0] - field.correction
-        boundary = torch.minimum(points - lower, upper - points).amin(dim=-1)
-        clearance = torch.minimum(distance, boundary).amin(dim=1)
+        clearance = field.query(points).amin(dim=1)
         states = torch.cat((centers, checker.robot.radius / np.sqrt(3) * axes.flatten(1)), dim=1)
         acceleration = states.diff(n=2, dim=0).square().sum(dim=1).mean()
         obstacle_cost = (safe_distance - clearance).relu().square().mean()

@@ -1,0 +1,4 @@
+{
+  "nominal": {"left_shoulder": 0, "right_shoulder": 0, "left_elbow": 0, "right_elbow": 0},
+  "compact": {"left_shoulder": 1.52, "right_shoulder": 1.52, "left_elbow": 0.10, "right_elbow": 0.10}
+}

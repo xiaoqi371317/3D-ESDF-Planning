@@ -1,0 +1,2 @@
+-r requirements-optimizer.txt
+yourdfpy>=0.0.60,<1

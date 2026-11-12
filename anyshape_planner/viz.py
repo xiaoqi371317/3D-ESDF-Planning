@@ -1,6 +1,7 @@
-"""Local viser demo with a draggable SE(3) goal and live replanning."""
+"""Local viser demo for rigid bodies and articulated floating-base robots."""
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from importlib.util import find_spec
 from queue import Empty, SimpleQueue
 from threading import Event
@@ -10,10 +11,14 @@ import numpy as np
 import viser
 from scipy.spatial.transform import Rotation
 
+from .articulated import ArticulatedRobot
+from .articulated_collision import Configuration
+from .articulated_planner import ArticulatedPlanner
 from .collision import Pose
 from .controller import Follower, TrackingError
+from .corridor import Corridor, corridor
 from .geometry import Robot
-from .planner import Plan, PlanningError, RRTConnect
+from .planner import PlanningError, RRTConnect
 from .scenes import clutter, window
 
 
@@ -24,9 +29,11 @@ def _move(handle, pose: Pose):
 
 class Demo:
     def __init__(self, server: viser.ViserServer, scene_name: str, robot: Robot,
-                 seed: int):
+                 seed: int, articulated: ArticulatedRobot | None = None):
         self.server = server
         self.robot = robot
+        self.custom_articulated = articulated
+        self.articulated = False
         self.scenes = {"窗口穿越": window(robot)}
         self.events = SimpleQueue()
         self.workers = ThreadPoolExecutor(max_workers=1)
@@ -37,28 +44,30 @@ class Demo:
         self.path = None
         self.path_handle = None
         self.obstacle_handles = []
+        self.body_parts = []
+        self.goal_parts = []
         self.auto_execute = False
         self.last_plan_summary = ""
         self.last_ui_update = 0.0
 
         server.scene.set_up_direction("+z")
         server.scene.world_axes.visible = False
-        server.scene.add_grid("/floor", width=6.2, height=3.7, position=(0, 0, -1.62),
-                              cell_size=.25, section_size=1, cell_color=(100, 117, 139),
-                              section_color=(149, 165, 184), plane_opacity=.19,
-                              plane_color=(40, 56, 77), fade_distance=9)
-        self.body = self._mesh("/robot", self.robot.mesh, (255, 178, 49))
+        self.floor = server.scene.add_grid("/floor", width=7.1, height=3.7,
+                                           cell_size=.25, section_size=1, cell_color=(100, 117, 139),
+                                           section_color=(149, 165, 184), plane_opacity=.19,
+                                           plane_color=(40, 56, 77), fade_distance=9)
+        self.body = server.scene.add_frame("/robot", show_axes=False)
         self.target = server.scene.add_transform_controls("/target", scale=.53, depth_test=False)
-        self._mesh("/target/preview", self.robot.mesh, (239, 93, 188), wireframe=True, opacity=.55)
 
         gui = server.gui
-        gui.set_panel_label("6-DoF 刚体路径规划")
+        gui.set_panel_label("3D ESDF 路径规划")
         gui.configure_theme(dark_mode=True, control_width="medium", show_logo=False,
                             show_share_button=False, brand_color=(80, 196, 168))
-        self.chooser = gui.add_dropdown("场景", ("窗口穿越", "杂乱环境"), initial_value=scene_name)
+        self.chooser = gui.add_dropdown("场景", ("窗口穿越", "杂乱环境", "双臂收缩走廊"), initial_value=scene_name)
         gui.add_markdown("拖动手柄设置目标位姿。执行中松开手柄，机器人会从当前位置重新规划。")
         self.free_orientation = gui.add_checkbox("目标姿态自由", False)
         self.tolerance = gui.add_number("位置容差（m）", 0.0, min=0.0, max=.3, step=.01)
+        self.goal_posture = gui.add_dropdown("目标关节姿态", ("展开", "收缩"), initial_value="展开", visible=False)
         self.optimize = gui.add_checkbox("ESDF 轨迹优化", False, disabled=find_spec("torch") is None,
                                          hint="可选 PyTorch 优化，保留通过连续碰撞检查的改进。")
         plan_button = gui.add_button("规划", color="blue")
@@ -77,13 +86,25 @@ class Demo:
         self.tolerance.on_update(lambda _: self.events.put(("target", None)))
         self.optimize.on_update(lambda _: self.events.put(("target", None)))
 
+        @self.goal_posture.on_update
+        def on_goal_posture(event):
+            if event.client_id is not None:
+                self.events.put(("target", None))
+
         @server.on_client_connect
         def set_camera(client):
-            client.camera.position = (4.2, -6.0, 3.45)
-            client.camera.look_at = (.45, .12, -.13)
-            client.camera.fov = np.deg2rad(38)
+            self._camera(client)
 
         self._change_scene(scene_name)
+
+    def _camera(self, client):
+        if self.articulated:
+            client.camera.position = (3.65, -6.9, 4.6)
+            client.camera.look_at = (.38, .10, -.10)
+        else:
+            client.camera.position = (4.2, -6.0, 3.45)
+            client.camera.look_at = (.45, .12, -.13)
+        client.camera.fov = np.deg2rad(38)
 
     def _mesh(self, name, mesh, color, **options):
         return self.server.scene.add_mesh_simple(name, mesh.vertices, mesh.faces, color=color,
@@ -92,6 +113,34 @@ class Demo:
 
     def _report(self, title: str, details: str = ""):
         self.status.content = f"**{title}**\n\n{details}" if details else f"**{title}**"
+
+    def _load_robot_parts(self):
+        for handle in [*self.body_parts, *self.goal_parts]:
+            handle.remove()
+        if self.articulated:
+            meshes = [link.geometry.mesh for link in self.scene.robot.links]
+        else:
+            meshes = [self.robot.mesh]
+        self.body_parts, self.goal_parts = [], []
+        for index, mesh in enumerate(meshes):
+            color = (255, 168, 52) if index == 0 else (255, 208, 96)
+            self.body_parts.append(self._mesh(f"/robot/link_{index}", mesh, color))
+            self.goal_parts.append(self._mesh(f"/target/link_{index}", mesh, (239, 93, 188),
+                                              wireframe=True, opacity=.55))
+
+    def _move_links(self, handles, q):
+        rotations, translations = self.scene.robot.fk(q)
+        for handle, rotation, position in zip(handles, rotations, translations):
+            _move(handle, Pose.at(position, Rotation.from_matrix(rotation)))
+
+    def _show_robot(self):
+        _move(self.body, self.pose)
+        if self.articulated:
+            self._move_links(self.body_parts, self.pose.joints)
+
+    def _goal_angles(self):
+        key = "compact" if self.goal_posture.value == "收缩" else "nominal"
+        return self.scene.robot.postures[key]
 
     def _stop(self):
         self.cancel.set()
@@ -106,27 +155,44 @@ class Demo:
     def _reset(self):
         self._stop()
         self.pose = self.scene.start
-        _move(self.body, self.pose)
+        self._show_robot()
         _move(self.target, self.scene.goal)
+        if self.articulated:
+            self.goal_posture.value = "展开"
+            self._move_links(self.goal_parts, self._goal_angles())
         self._report("等待规划", "橙色是机器人，粉色线框是目标位姿。")
 
     def _change_scene(self, name: str):
         self._stop()
         self._report("正在构建 ESDF")
         if name not in self.scenes:
-            self.scenes[name] = clutter(robot=self.robot)
+            self.scenes[name] = (corridor(self.custom_articulated) if name == "双臂收缩走廊"
+                                 else clutter(robot=self.robot))
         self.scene = self.scenes[name]
         self.checker = self.scene.checker
+        self.articulated = isinstance(self.scene, Corridor)
+        self.goal_posture.visible = self.articulated
+        self.floor.position = (0, 0, self.scene.bounds[0, 2] - .02)
+        self._load_robot_parts()
+        for client in self.server.get_clients().values():
+            self._camera(client)
         for handle in self.obstacle_handles:
             handle.remove()
-        is_window = self.scene.portal is not None
+        is_window = not self.articulated and self.scene.portal is not None
         self.obstacle_handles = [
             self._mesh(f"/obstacles/{i}", obstacle.mesh, (104, 137, 175),
-                       opacity=.46 if is_window else .88, side="double",
-                       cast_shadow=not is_window)
+                       opacity=([.16, .37, .32, .10][i] if self.articulated else .46 if is_window else .88),
+                       side="double", cast_shadow=not (is_window or self.articulated))
             for i, obstacle in enumerate(self.scene.obstacles)
         ]
-        if is_window:
+        if self.articulated:
+            x, y, z = self.scene.half_length, self.scene.half_width, self.scene.half_height
+            rings = np.array([[[i, -y, -z], [i, y, -z], [i, y, z], [i, -y, z]] for i in (-x, x)])
+            edges = np.stack((rings, np.roll(rings, -1, axis=1)), axis=2).reshape(-1, 2, 3)
+            lines = np.concatenate((edges, rings.transpose(1, 0, 2)))
+            self.obstacle_handles.append(self.server.scene.add_line_segments(
+                "/obstacles/corridor_rim", lines, (114, 202, 250), thickness=2, thickness_units="screen"))
+        elif is_window:
             corners = np.array([[.152, -.4, -.44], [.152, .4, -.44],
                                 [.152, .4, .44], [.152, -.4, .44]])
             edge_lines = np.stack((corners, np.roll(corners, -1, axis=0)), axis=1)
@@ -139,23 +205,36 @@ class Demo:
         clock = perf_counter()
         plan = planner.plan(start, goal, free_orientation=free,
                             position_tolerance=tolerance, cancelled=cancelled)
+        checker = planner.checker
+        articulated = isinstance(planner, ArticulatedPlanner)
+        margins = (checker.margin, checker.self_margin) if articulated else (checker.margin,)
+
+        def dense(path):
+            if articulated:
+                return checker.dense_clearances(path)
+            return (checker.dense_clearance(path, step=.005),)
+
+        def clear(values):
+            return all(distance > margin for distance, margin in zip(values, margins))
+
         refinement_status = ""
         minimum = None
         if optimize and not cancelled():
-            from .optimizer import refine
-
-            result = refine(plan.path, planner.checker, cancelled=cancelled)
-            candidate_minimum = (planner.checker.dense_clearance(result.path, step=.005)
-                                 if result.accepted else -np.inf)
-            if candidate_minimum > planner.checker.margin:
-                plan = Plan(result.path, plan.iterations)
+            if articulated:
+                from .articulated_optimizer import refine_articulated as refine
+            else:
+                from .optimizer import refine
+            result = refine(plan.path, checker, cancelled=cancelled)
+            candidate_minimum = dense(result.path) if result.accepted else None
+            if candidate_minimum is not None and clear(candidate_minimum):
+                plan = replace(plan, path=result.path)
                 minimum = candidate_minimum
                 refinement_status = " · 优化通过"
             else:
                 refinement_status = " · 保留原路径"
         if minimum is None:
-            minimum = planner.checker.dense_clearance(plan.path, step=.005)
-        if minimum <= planner.checker.margin:
+            minimum = dense(plan.path)
+        if not clear(minimum):
             raise PlanningError("Dense collision verification failed.")
         return plan, minimum, perf_counter() - clock, refinement_status
 
@@ -165,21 +244,34 @@ class Demo:
         self.auto_execute = execute
         rotation = Rotation.from_quat(np.array(self.target.wxyz), scalar_first=True)
         goal = Pose.at(np.array(self.target.position), rotation)
-        guide = self.scene.sample_portal if self.scene.portal is not None else None
-        planner = RRTConnect(self.checker, self.scene.bounds, self.seed, guide)
-        self._report("正在重新规划" if retarget else "正在规划", "SE(3) RRT-Connect")
+        if self.articulated:
+            planner = ArticulatedPlanner(self.checker, self.scene.bounds, self.scene.portals, self.seed)
+            goal = Configuration(goal, self._goal_angles())
+            detail = "SE(3) × 关节空间"
+        else:
+            guide = self.scene.sample_portal if self.scene.portal is not None else None
+            planner = RRTConnect(self.checker, self.scene.bounds, self.seed, guide)
+            detail = "SE(3) RRT-Connect"
+        self._report("正在重新规划" if retarget else "正在规划", detail)
         self.pending = self.workers.submit(self._solve, planner, self.pose, goal,
                                            self.free_orientation.value, self.tolerance.value,
                                            self.optimize.value, self.cancel.is_set)
 
-    def _show_plan(self, plan: Plan, minimum: float, seconds: float, refinement_status: str):
+    def _clearance_text(self, environment, self_distance=None):
+        if self_distance is None:
+            return f"**{100 * environment:.2f} cm**"
+        self_text = f"**{100 * self_distance:.2f} cm**" if np.isfinite(self_distance) else "无检测对"
+        return f"环境 **{100 * environment:.2f} cm** · 自碰撞 {self_text}"
+
+    def _show_plan(self, plan, minimum, seconds: float, refinement_status: str):
         self.path = plan.path
         positions = np.array([pose.position for pose in plan.path])
         lines = np.stack((positions[:-1], positions[1:]), axis=1)
         self.path_handle = self.server.scene.add_line_segments(
             "/path", lines, (60, 244, 181), thickness=4, thickness_units="screen")
-        self.last_plan_summary = (f"{len(plan.path)} 个路点 · {seconds:.2f} s{refinement_status}  \n"
-                                  f"5 mm 复检最小净空 **{100 * minimum:.2f} cm**")
+        method = f" · {plan.method}" if self.articulated else ""
+        self.last_plan_summary = (f"{len(plan.path)} 个路点 · {seconds:.2f} s{method}{refinement_status}  \n"
+                                  f"5 mm 复检净空 {self._clearance_text(*minimum)}")
         if self.auto_execute:
             self._execute()
         else:
@@ -209,18 +301,25 @@ class Demo:
             self._report("执行已停止", str(error))
             return
         self.pose = sample.pose
-        _move(self.body, self.pose)
+        self._show_robot()
         if self.following.done:
             position, angle = self.following.terminal_error
             minimum = min(state.clearance for state in self.following.samples)
+            minimum_self = min(state.self_clearance for state in self.following.samples) if self.articulated else None
+            joints = (f"  \n关节最大误差 **{np.rad2deg(self.following.terminal_joint_error):.2f}°**"
+                      if self.articulated else "")
             self._report("已到达目标", f"{self.last_plan_summary}  \n"
-                         f"跟踪最小净空 **{100 * minimum:.2f} cm**  \n"
-                         f"终点误差 **{1000 * position:.2f} mm / {np.rad2deg(angle):.2f}°**")
+                         f"跟踪净空 {self._clearance_text(minimum, minimum_self)}  \n"
+                         f"终点误差 **{1000 * position:.2f} mm / {np.rad2deg(angle):.2f}°**{joints}")
             self.following = None
         elif sample.time - self.last_ui_update >= .16:
             self.last_ui_update = sample.time
+            clearance = self._clearance_text(sample.clearance, sample.self_clearance if self.articulated else None)
+            angles = ""
+            if self.articulated:
+                angles = "  \n关节角 " + " / ".join(f"{angle:.0f}°" for angle in np.rad2deg(self.pose.joints))
             self._report("执行中", f"{self.last_plan_summary}  \n"
-                         f"当前净空 **{100 * sample.clearance:.2f} cm** · {sample.time:.1f} s")
+                         f"当前净空 {clearance} · {sample.time:.1f} s{angles}")
 
     def run(self):
         dt = .025
@@ -241,6 +340,8 @@ class Demo:
                     elif kind == "execute":
                         self._execute()
                     elif kind == "target":
+                        if self.articulated:
+                            self._move_links(self.goal_parts, self._goal_angles())
                         if self.following is not None or (self.pending is not None and self.auto_execute):
                             self._plan(True, retarget=True)
                         else:

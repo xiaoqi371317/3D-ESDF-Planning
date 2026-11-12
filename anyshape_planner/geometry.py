@@ -109,10 +109,15 @@ class ESDF:
     def correction(self) -> float:
         return float(np.sqrt(3.0) * self.resolution / 2.0)
 
-    def query(self, points: np.ndarray) -> np.ndarray:
+    def interpolate(self, points: np.ndarray) -> np.ndarray:
+        """Trilinear field with constant extension beyond the boundary cells."""
         points = np.asarray(points, dtype=float)
         coords = (points - self.origin) / self.resolution
-        distance = map_coordinates(self.values, coords.T, order=1, mode="nearest",
-                                   output=np.float64) - self.correction
+        return (map_coordinates(self.values, coords.T, order=1, mode="nearest",
+                                output=np.float64) - self.correction)
+
+    def query(self, points: np.ndarray) -> np.ndarray:
+        points = np.asarray(points, dtype=float)
+        distance = self.interpolate(points)
         boundary = np.minimum(points - self.origin, self.high - points).min(axis=1)
         return np.minimum(distance, boundary)
