@@ -4,6 +4,27 @@
 
 ![L 形机器人旋转穿过窗口](assets/window-demo.gif)
 
+## 地图探索与双窄口转弯
+
+```powershell
+python run_demo.py --scene map --port 8083 --open
+```
+
+场景有两个相互垂直的开口，分别宽 84 cm、高 89 cm 和宽 78 cm、高 77 cm。运行 **规划并执行**，面板显示升降、肩关节、肘关节的位置与速度，以及四轮角速度。
+
+`MapPlanner(checker).plan(start, goal)` 接收含 ESDF 和机器人模型的碰撞检查器，以及起终位姿或构型。规划器从地图的底盘高度切片用 A* 找到引导路线，根据沿线净空识别狭窄区和局部通道方向，再搜索同时包含平面位置、偏航和关节状态的构型图。URDF 的紧凑姿态用于生成候选，通行高度与折臂角度根据净空调整。规划输入中无须提供入口、出口或通行姿态。
+
+轨迹经连续碰撞检查后进行五次样条平滑，并重新验证样条。该场景的底盘在两道口之间转向 90°，较低的第二道口需要额外下降约 10 cm。默认轨迹的 22 个内部路点均保持前进，5 mm 密采样的 5,281 个构型通过 FCL 检查。封住第二道口后，搜索返回无连通路径。
+
+![双窄口的平滑轨迹和逐关节曲线](assets/map-joint-trajectories.png)
+
+[演示动图](assets/map-corridor.gif) · [逐关节轨迹 CSV](assets/map-planned-trajectory.csv) · [测试报告](map_trajectory_results.json)
+
+```powershell
+python -m pip install -r requirements-articulated-tests.txt
+python -m anyshape_planner.tests.map_benchmark --output map_trajectory_results.json
+```
+
 ## 全向底盘与升降折叠机械臂
 
 [麦克纳姆轮移动机械臂 URDF](anyshape_planner/models/mecanum_arm.urdf)包含四轮底盘、24 cm 行程的升降立柱、肩关节、肘关节和夹爪。轮子用圆柱包络做碰撞检测，用斜滚子网格渲染。规划和跟踪将底盘约束在地面 (x, y, yaw)，并用麦克纳姆逆运动学检查四轮速度。仿真使用运动学速度控制。[麦克纳姆逆运动学参考](https://github.com/ros-controls/ros2_controllers/blob/master/mecanum_drive_controller/src/mecanum_drive_controller.cpp#L586-L605)

@@ -18,6 +18,8 @@ from .collision import Pose
 from .controller import Follower, TrackingError
 from .corridor import Corridor, corridor
 from .geometry import Robot
+from .map_planner import MapPlanner
+from .map_scene import MAP_SCENE, MapScene, map_scene
 from .mobile import MOBILE_SCENE, MobileCorridor, mobile_corridor
 from .planner import PlanningError, RRTConnect
 from .scenes import clutter, window
@@ -38,6 +40,7 @@ class Demo:
         self.custom_articulated = articulated
         self.articulated = False
         self.mobile = False
+        self.map_only = False
         self.scenes = {"窗口穿越": window(robot)}
         self.events = SimpleQueue()
         self.workers = ThreadPoolExecutor(max_workers=1)
@@ -57,10 +60,7 @@ class Demo:
 
         server.scene.set_up_direction("+z")
         server.scene.world_axes.visible = False
-        self.floor = server.scene.add_grid("/floor", width=7.1, height=3.7,
-                                           cell_size=.25, section_size=1, cell_color=(100, 117, 139),
-                                           section_color=(149, 165, 184), plane_opacity=.19,
-                                           plane_color=(40, 56, 77), fade_distance=9)
+        self.floor = None
         self.body = server.scene.add_frame("/robot", show_axes=False)
         self.target = server.scene.add_transform_controls("/target", scale=.53, depth_test=False)
 
@@ -68,7 +68,7 @@ class Demo:
         gui.set_panel_label("3D ESDF 路径规划")
         gui.configure_theme(dark_mode=True, control_width="medium", show_logo=False,
                             show_share_button=False, brand_color=(80, 196, 168))
-        self.chooser = gui.add_dropdown("场景", ("窗口穿越", "杂乱环境", "双臂收缩走廊", MOBILE_SCENE),
+        self.chooser = gui.add_dropdown("场景", ("窗口穿越", "杂乱环境", "双臂收缩走廊", MOBILE_SCENE, MAP_SCENE),
                                         initial_value=scene_name)
         self.instructions = gui.add_markdown("")
         self.free_orientation = gui.add_checkbox("目标姿态自由", False)
@@ -105,7 +105,10 @@ class Demo:
         self._change_scene(scene_name)
 
     def _camera(self, client):
-        if self.mobile:
+        if self.map_only:
+            client.camera.position = (6.6, -7.1, 7.3)
+            client.camera.look_at = (.0, .90, .40)
+        elif self.mobile:
             client.camera.position = (3.8, -6.7, 3.55)
             client.camera.look_at = (.69, .10, .38)
         elif self.articulated:
@@ -114,7 +117,7 @@ class Demo:
         else:
             client.camera.position = (4.2, -6.0, 3.45)
             client.camera.look_at = (.45, .12, -.13)
-        client.camera.fov = np.deg2rad(38)
+        client.camera.fov = np.deg2rad(42 if self.map_only else 38)
 
     def _mesh(self, name, mesh, color, **options):
         return self.server.scene.add_mesh_simple(name, mesh.vertices, mesh.faces, color=color,
@@ -196,7 +199,9 @@ class Demo:
         self._stop()
         self._report("正在构建 ESDF")
         if name not in self.scenes:
-            if name == MOBILE_SCENE:
+            if name == MAP_SCENE:
+                self.scenes[name] = map_scene()
+            elif name == MOBILE_SCENE:
                 self.scenes[name] = mobile_corridor()
             elif name == "双臂收缩走廊":
                 self.scenes[name] = corridor(self.custom_articulated)
@@ -204,12 +209,21 @@ class Demo:
                 self.scenes[name] = clutter(robot=self.robot)
         self.scene = self.scenes[name]
         self.checker = self.scene.checker
-        self.articulated = isinstance(self.scene, Corridor)
-        self.mobile = isinstance(self.scene, MobileCorridor)
+        self.map_only = isinstance(self.scene, MapScene)
+        self.articulated = isinstance(self.scene, (Corridor, MapScene))
+        self.mobile = isinstance(self.scene, (MobileCorridor, MapScene))
         self.goal_posture.visible = self.articulated
         self.instructions.content = ("拖动手柄设定地面位置和偏航角。执行中松开手柄会重新规划。" if self.mobile else
                                      "拖动手柄设置目标位姿。执行中松开手柄，机器人会从当前位置重新规划。")
-        self.floor.position = (0, 0, self.scene.base_height if self.mobile else self.scene.bounds[0, 2] - .02)
+        if self.floor is not None:
+            self.floor.remove()
+        center = self.scene.bounds.mean(axis=0)[:2] if self.map_only else (0, 0)
+        width, height = np.ptp(self.scene.bounds, axis=0)[:2] if self.map_only else (7.1, 3.7)
+        z = self.scene.base_height if self.mobile else self.scene.bounds[0, 2] - .02
+        self.floor = self.server.scene.add_grid("/floor", width=width, height=height, position=(*center, z),
+                                                cell_size=.25, section_size=1, cell_color=(100, 117, 139),
+                                                section_color=(149, 165, 184), plane_opacity=.19,
+                                                plane_color=(40, 56, 77), fade_distance=13 if self.map_only else 9)
         self._load_robot_parts()
         for client in self.server.get_clients().values():
             self._camera(client)
@@ -218,13 +232,31 @@ class Demo:
         is_window = not self.articulated and self.scene.portal is not None
         opacity = ((.14, .40, .15) if self.mobile else (.16, .37, .32, .10)) if self.articulated else (
             (.46 if is_window else .88,) * len(self.scene.obstacles))
+        if self.map_only:
+            opacity = (.15, .24, .20, .18, .25, .18)
         self.obstacle_handles = [
             self._mesh(f"/obstacles/{i}", obstacle.mesh, (104, 137, 175),
                        opacity=opacity[i],
                        side="double", cast_shadow=not (is_window or self.articulated))
             for i, obstacle in enumerate(self.scene.obstacles)
         ]
-        if self.articulated:
+        if self.map_only:
+            for index, obstacle in enumerate(self.scene.obstacles):
+                if obstacle.box_bounds is None or obstacle.box_bounds[0, 2] <= self.scene.base_height:
+                    continue
+                lo, hi = obstacle.box_bounds
+                floor = self.scene.base_height
+                rings = np.array([[[lo[0], lo[1], z], [hi[0], lo[1], z], [hi[0], hi[1], z], [lo[0], hi[1], z]]
+                                  for z in (floor, lo[2])])
+                edges = np.stack((rings, np.roll(rings, -1, axis=1)), axis=2).reshape(-1, 2, 3)
+                lines = np.concatenate((edges, rings.transpose(1, 0, 2)))
+                self.obstacle_handles.append(self.server.scene.add_line_segments(
+                    f"/obstacles/opening_{index}", lines, (114, 202, 250), thickness=2, thickness_units="screen"))
+                width, height = 100 * (hi[:2] - lo[:2]).min(), 100 * (lo[2] - floor)
+                x, y = (lo[:2] + hi[:2]) / 2
+                self.obstacle_handles.append(self.server.scene.add_label(
+                    f"/obstacles/size_{index}", f"{width:.0f} × {height:.0f} cm", position=(x, y, lo[2] + .10)))
+        elif isinstance(self.scene, Corridor):
             x, y = self.scene.half_length, self.scene.half_width
             low, high = self.scene.opening_z
             rings = np.array([[[i, -y, low], [i, y, low], [i, y, high], [i, -y, high]] for i in (-x, x)])
@@ -295,10 +327,14 @@ class Demo:
         self.auto_execute = execute
         goal = self._target_pose()
         if self.articulated:
-            planner = ArticulatedPlanner(self.checker, self.scene.bounds, self.scene.portals, self.seed,
-                                         adaptive_posture=self.mobile)
+            if self.map_only:
+                planner = MapPlanner(self.checker, self.seed)
+            else:
+                planner = ArticulatedPlanner(self.checker, self.scene.bounds, self.scene.portals, self.seed,
+                                             adaptive_posture=self.mobile)
             goal = Configuration(goal, self._goal_angles())
-            detail = "SE(2) × 关节空间" if self.mobile else "SE(3) × 关节空间"
+            detail = "从障碍物地图搜索引导路径与联合构型" if self.map_only else (
+                "SE(2) × 关节空间" if self.mobile else "SE(3) × 关节空间")
         else:
             guide = self.scene.sample_portal if self.scene.portal is not None else None
             planner = RRTConnect(self.checker, self.scene.bounds, self.seed, guide)

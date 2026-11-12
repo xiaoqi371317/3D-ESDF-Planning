@@ -1,0 +1,50 @@
+{
+  "planning_seconds": 19.367265499997302,
+  "smoothing_seconds": 15.84075469999516,
+  "search": {
+    "layers": 26,
+    "states": 2169,
+    "checked_edges": 64,
+    "rejected_edges": 34,
+    "compact_seed_repair": false
+  },
+  "trajectory_knots": 24,
+  "trajectory_seconds": 22.24481983811799,
+  "tangent_scale": 1.0,
+  "base_turn_deg": 90.0,
+  "openings": [
+    {
+      "width_m": 0.8400000000000001,
+      "height_m": 0.89,
+      "base_xy_m": [
+        -1.5256588169590155,
+        -1.1500003331926885
+      ],
+      "yaw_deg": 1.5902773407317584e-15,
+      "lift_m": 0.23875000000000002,
+      "shoulder_deg": 75.27020048144293,
+      "elbow_deg": -0.30438382866324976
+    },
+    {
+      "width_m": 0.78,
+      "height_m": 0.77,
+      "base_xy_m": [
+        1.4991710992014027,
+        1.274944086831497
+      ],
+      "yaw_deg": 90.00000000000001,
+      "lift_m": 0.1375,
+      "shoulder_deg": 77.88012790395427,
+      "elbow_deg": -0.3043838286632497
+    }
+  ],
+  "interior_knots_with_motion": 22,
+  "interior_knots": 22,
+  "min_environment_m": 0.013546075439071784,
+  "min_self_m": 0.015791297151067113,
+  "fcl_samples_at_5mm": 5281,
+  "peak_wheel_rad_s": 7.070820097278722,
+  "wheel_limit_rad_s": 10.0,
+  "continuous_velocity_and_acceleration": true,
+  "sealed_opening_rejected": true
+}
