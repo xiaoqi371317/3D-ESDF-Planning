@@ -30,9 +30,16 @@ def _velocity_hull(controls, duration):
 
 
 class PlanarTrajectory:
-    def __init__(self, path, checker, drive, tangent_scale):
+    def __init__(self, path, checker, drive, tangent_scale, *, geometry=None, joint_acceleration=None):
         self.checker = checker
         self.drive = drive
+        self.geometry = geometry
+        self.joint_acceleration = None
+        if joint_acceleration is not None:
+            limits = np.asarray(joint_acceleration, dtype=float)
+            if limits.shape != checker.robot.speeds.shape or not np.all(np.isfinite(limits) & (limits > 0.)):
+                raise ValueError("Each joint requires a positive, finite acceleration limit.")
+            self.joint_acceleration = limits
         self.tangent_scale = tangent_scale
         self.start, self.goal = path[0], path[-1]
         robot = checker.robot
@@ -63,15 +70,22 @@ class PlanarTrajectory:
         slopes = 1.25 * np.abs(np.diff(coordinates, axis=0)) / duration[:, None]
         cap = np.minimum(slopes[:-1], slopes[1:])
         tangents[1:-1] = np.clip(tangents[1:-1], -cap, cap) * tangent_scale
+        self._set_polynomial(self.controls(coordinates, tangents, duration), duration)
+
+    @staticmethod
+    def controls(coordinates, tangents, durations):
         start, end = coordinates[:-1], coordinates[1:]
-        outgoing = tangents[:-1] * duration[:, None] / 5
-        incoming = tangents[1:] * duration[:, None] / 5
+        outgoing = tangents[:-1] * durations[:, None] / 5
+        incoming = tangents[1:] * durations[:, None] / 5
         # The quintic has the same tangent and zero acceleration on both sides
         # of each knot, with zero velocity at the two trajectory endpoints.
-        controls = np.stack((start, start + outgoing, start + 2 * outgoing,
-                             end - 2 * incoming, end - incoming, end), axis=1)
+        return np.stack((start, start + outgoing, start + 2 * outgoing,
+                         end - 2 * incoming, end - incoming, end), axis=1)
 
-        rates, pair_rates = [], []
+    def _set_polynomial(self, controls, duration):
+        checker, drive = self.checker, self.drive
+        robot = checker.robot
+        rates, pair_rates, link_rates = [], [], []
         scale = 1.0
         for control, seconds in zip(controls, duration):
             hull = _velocity_hull(control, seconds)
@@ -80,16 +94,32 @@ class PlanarTrajectory:
             wheel = (np.sqrt(2) * speed + drive.lever * turn) / drive.wheel_radius
             scale = max(scale, 1.01 * max(speed.max(), turn.max() / 2.4,
                         wheel.max() / drive.wheel_speed_limit, (joint / robot.speeds).max(initial=0)))
+            if self.joint_acceleration is not None:
+                joint_acc = 20 * np.diff(control[:, 3:], n=2, axis=0) / seconds**2
+                scale = max(scale, np.sqrt((np.abs(joint_acc) / self.joint_acceleration).max(initial=0.)))
             point = (speed + robot.radius * turn + joint @ robot.joint_radii).max()
             relative = (joint @ checker.dynamic_rates.T).max(axis=0, initial=0)
             rates.append((point, relative.max(initial=0)))
             pair_rates.append(relative)
+            if self.geometry is not None:
+                links = speed[:, None] + np.abs(hull[:, 2:]) @ self.geometry.motion[:, 2:].T
+                link_rates.append(links.max(axis=0))
 
-        self.knots = knots * scale
+        self.knots = np.r_[0., duration.cumsum()] * scale
         self.duration = float(self.knots[-1])
         self.spline = BPoly(np.swapaxes(controls, 0, 1), self.knots)
         self.rates = np.asarray(rates) / scale
         self.pair_rates = np.asarray(pair_rates) / scale
+        self.link_rates = np.asarray(link_rates) / scale
+
+    def clearances(self, state):
+        if self.geometry is not None:
+            return self.geometry.clearances(state)
+        return self.checker.clearances(state)
+
+    @property
+    def environment_margin(self):
+        return self.checker.margin if self.geometry is None else self.geometry.margin
 
     def at(self, time):
         if time <= 0:
@@ -105,12 +135,16 @@ class PlanarTrajectory:
 
     def _certify(self, cancelled):
         checker = self.checker
-        for start, end, (point, _), pair_rates in zip(self.knots[:-1], self.knots[1:], self.rates, self.pair_rates):
+        for index, (point, _) in enumerate(self.rates):
+            start, end = self.knots[index:index + 2]
+            pair_rates = self.pair_rates[index]
             env_rate = point * checker.field.lipschitz
 
             def radius_at(time):
                 if cancelled():
                     raise PlanningError("Planning cancelled.")
+                if self.geometry is not None:
+                    return self.geometry.free_interval_radius(self.at(time), self.link_rates[index], pair_rates)
                 return checker.free_interval_radius(self.at(time), env_rate, pair_rates)
 
             if not certify_interval(radius_at, start, end, max_samples=2500):
@@ -133,7 +167,7 @@ class PlanarTrajectory:
         def measure(time):
             if cancelled():
                 raise PlanningError("Planning cancelled.")
-            return checker.clearances(self.at(time))
+            return self.clearances(self.at(time))
 
         distances = [measure(time) for time in self.knots]
         environment, self_distance = np.min(distances, axis=0)
@@ -141,15 +175,15 @@ class PlanarTrajectory:
             start, end = self.knots[index:index + 2]
             count = max(1, ceil((end - start) * point / step))
             times = np.linspace(start, end, count + 1)
-            env_rate = point * checker.field.lipschitz
+            env_rate = (point * checker.field.lipschitz if self.geometry is None
+                        else self.link_rates[index].max(initial=0.))
             pending = [(0, count, distances[index], distances[index + 1])]
             while pending:
                 left, right, first, last = pending.pop()
                 if right - left <= 1:
                     continue
                 span = times[right] - times[left]
-                # The maximum of the two endpoint cones is at least their
-                # mean everywhere. Each cone is a lower bound on clearance.
+                # The mean of the two endpoint cones is a lower bound.
                 env_safe = (env_rate == 0 or
                             first[0] + last[0] - env_rate * span >= 2 * environment + 1e-10)
                 self_safe = (relative == 0 or
@@ -171,16 +205,19 @@ class PlanarTrajectory:
         return np.moveaxis(self.drive.wheel_speeds(local_x, local_y, turn), 0, -1)
 
     @classmethod
-    def fit(cls, path, checker, drive, cancelled=lambda: False):
+    def fit(cls, path, checker, drive, cancelled=lambda: False, *,
+            geometry=None, optimize=None, joint_acceleration=None):
         if len(path) < 2 or checker.base_height is None or not all(checker.valid(state) for state in path):
             raise PlanningError("需要有效的地面平面路点才能生成轨迹。")
         for scale in (1., .35, 0.):
-            trajectory = cls(path, checker, drive, scale)
-            if not trajectory._certify(cancelled):
-                continue
-            environment, self_distance = trajectory._dense_minimum(cancelled)
-            if environment > checker.margin and self_distance > checker.self_margin:
-                return trajectory, (environment, self_distance)
+            trajectory = cls(path, checker, drive, scale, geometry=geometry, joint_acceleration=joint_acceleration)
+            refined = optimize(trajectory, cancelled) if scale == 1. and optimize is not None else None
+            candidates = (refined, trajectory) if refined is not None else (trajectory,)
+            for candidate in candidates:
+                if candidate._certify(cancelled):
+                    environment, self_distance = candidate._dense_minimum(cancelled)
+                    if environment > candidate.environment_margin and self_distance > checker.self_margin:
+                        return candidate, (environment, self_distance)
         raise PlanningError("样条及保守回退均未通过连续碰撞复检。")
 
 
@@ -196,8 +233,8 @@ class TrajectoryPlayback:
 
     def _sample(self):
         checker = self.trajectory.checker
-        env, self_distance = checker.clearances(self.pose)
-        if env <= checker.margin or self_distance <= checker.self_margin:
+        env, self_distance = self.trajectory.clearances(self.pose)
+        if env <= self.trajectory.environment_margin or self_distance <= checker.self_margin:
             raise TrackingError("轨迹执行时净空不足。")
         return TrackingSample(self.time, self.pose, env, 0, 0, self_distance)
 

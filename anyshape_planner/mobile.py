@@ -33,6 +33,12 @@ class MecanumDrive:
         return np.array((vx - vy - turn, vx + vy + turn,
                          vx + vy - turn, vx - vy + turn)) / self.wheel_radius
 
+    def body_velocity(self, wheels):
+        """Recover the planar body twist from FL, FR, RL, RR wheel speeds."""
+        fl, fr, rl, rr = wheels
+        return self.wheel_radius / 4 * np.array(
+            (fl + fr + rl + rr, -fl + fr + rl - rr, (-fl + fr - rl + rr) / self.lever))
+
     def limit(self, rotation, linear, angular):
         local = rotation.apply(linear, inverse=True)
         peak = np.abs(self.wheel_speeds(*local[:2], angular[2])).max()

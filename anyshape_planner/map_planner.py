@@ -66,10 +66,14 @@ def _grid_path(clearance, start, goal, radius, cancelled):
 class MapPlanner(ArticulatedPlanner):
     """Search configuration layers along an automatically discovered guide."""
 
-    def __init__(self, checker, seed=0):
+    def __init__(self, checker, seed=0, *, geometry=None, fixed_joints=()):
         if checker.base_height is None:
             raise ValueError("MapPlanner requires a planar base.")
         super().__init__(checker, np.stack((checker.field.origin, checker.field.high)), seed=seed)
+        self.seed = seed
+        self.geometry = geometry
+        self.fixed_joints = np.zeros(len(self.robot.speeds), dtype=bool)
+        self.fixed_joints[list(fixed_joints)] = True
         self.height = checker.base_height
         self.chassis_z = self.height + checker.robot.centers[0, 2]
         self.radius_xy = float(checker.robot.half_extents[0, :2].min())
@@ -82,6 +86,9 @@ class MapPlanner(ArticulatedPlanner):
         self.arm_reach = np.linalg.norm(self.robot.frozen(self.nominal).mesh.vertices[:, :2], axis=1).max()
         for fraction in (0., .60, .83, 1.):
             q = self.robot.clamp(self.nominal + fraction * delta)
+            q[self.fixed_joints] = self.nominal[self.fixed_joints]
+            if any(np.array_equal(q, old) for old, _ in self.prior):
+                continue
             if checker.self_clearance(q) > checker.self_margin:
                 self.prior.append((q, checker.prepare_environment_samples(self.robot.frozen(q).points)))
 
@@ -151,6 +158,8 @@ class MapPlanner(ArticulatedPlanner):
     def _refine(self, pose, q, coordinates, cancelled):
         result = q.copy()
         for index in coordinates:
+            if self.fixed_joints[index]:
+                continue
             change = self.robot.delta(result, self.nominal)[index]
             if abs(change) < 1e-5:
                 continue
@@ -267,7 +276,7 @@ class MapPlanner(ArticulatedPlanner):
                 a, b = layers[layer][i], layers[layer + 1][j]
                 edge = self.checker.edge(a, b)
                 if not (all(self.checker.is_free(edge.at(t)) for t in (.5, .2, .8)) and
-                        self.checker.edge_is_free(a, b)):
+                        self._edge_is_free(a, b)):
                     costs[layer][i, j] = np.inf
                     rejected += 1
                     break
@@ -290,7 +299,7 @@ class MapPlanner(ArticulatedPlanner):
                 if np.linalg.norm(posture - state.joints) <= 1e-4:
                     continue
                 candidate = Configuration(state.base, posture)
-                if self.checker.edge_is_free(before, candidate) and self.checker.edge_is_free(candidate, after):
+                if self._edge_is_free(before, candidate) and self._edge_is_free(candidate, after):
                     path[index] = candidate
                     break
         return path
@@ -316,7 +325,7 @@ class MapPlanner(ArticulatedPlanner):
                     ):
                         approximates = False
                         break
-                if approximates and self.checker.edge_is_free(path[index], path[end]):
+                if approximates and self._edge_is_free(path[index], path[end]):
                     break
             else:
                 end = index + 1
@@ -337,10 +346,16 @@ class MapPlanner(ArticulatedPlanner):
             for scale in (1., .5):
                 q = self.robot.clamp(state.joints + scale * offset)
                 candidate = Configuration(state.base, q)
-                if self.checker.edge_is_free(before, candidate) and self.checker.edge_is_free(candidate, after):
+                if self._edge_is_free(before, candidate) and self._edge_is_free(candidate, after):
                     result[index] = candidate
                     break
         return result
+
+    def _edge_is_free(self, start, end):
+        if self.geometry is None:
+            return self.checker.edge_is_free(start, end)
+        # Leave room for the quintic to move off the polygonal seed.
+        return self.geometry.edge_is_free(start, end, margin=self.geometry.margin + .011)
 
     def plan(self, start, goal, *, free_orientation=False, position_tolerance=0., cancelled=lambda: False):
         if position_tolerance < 0:
@@ -354,10 +369,15 @@ class MapPlanner(ArticulatedPlanner):
         if not self.checker.is_free(start):
             raise PlanningError("起始构型发生碰撞。")
         targets = self._targets(start, goal, free_orientation, position_tolerance)
+        if self.fixed_joints.any() and any(
+            not np.array_equal(state.joints[self.fixed_joints], self.nominal[self.fixed_joints])
+            for state in (start, *targets)
+        ):
+            raise PlanningError("起终构型必须符合锁定关节的参考姿态。")
         guide_found = False
         guide_error = None
         for target in targets:
-            if self.checker.edge_is_free(start, target):
+            if self._edge_is_free(start, target):
                 return MapPlan([start, target], 0, "地图直接连接")
             try:
                 guide = self._guide(start, target, cancelled)

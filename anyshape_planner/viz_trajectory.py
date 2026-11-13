@@ -35,6 +35,7 @@ class JointTrajectoryPlots:
         robot = trajectory.checker.robot
         states = trajectory.spline(times)
         speeds = trajectory.spline(times, nu=1)
+        acceleration = trajectory.spline(times, nu=2)
         wheels = trajectory.wheel_speeds(times)
         joints = [joint for joint in robot.joints if joint.dof is not None]
         names = {"lift": "升降 lift", "shoulder": "肩关节 shoulder", "elbow": "肘关节 elbow"}
@@ -56,6 +57,16 @@ class JointTrajectoryPlots:
                           {"scale": "y", "size": 41, "stroke": "#5ce1b7", "grid": grid},
                           {"scale": "speed", "side": 1, "size": 36, "stroke": "#ffb65e",
                            "grid": {"show": False}})))
+            if trajectory.joint_acceleration is not None:
+                colors = ("#5ce1b7", "#ffb65e", "#83bfff")
+                self.plots.append(self.gui.add_uplot(
+                    (times, *(acceleration[:, joint.dof + 3] / trajectory.joint_acceleration[joint.dof]
+                              for joint in joints)),
+                    ({}, *({"label": names.get(joint.name, joint.name),
+                            "stroke": colors[i % len(colors)], "width": 1.5} for i, joint in enumerate(joints))),
+                    title="关节加速度 / 限值", height=124, scales={**time_scale, "y": {"range": (-1., 1.)}},
+                    axes=({"scale": "x", "stroke": "#a6b1be", "grid": grid},
+                          {"scale": "y", "size": 35, "stroke": "#a6b1be", "grid": grid})))
             self.plots.append(self.gui.add_uplot(
                 (times, *wheels.T),
                 ({}, *({"label": label, "stroke": color, "width": 1.5} for label, color in
@@ -67,9 +78,11 @@ class JointTrajectoryPlots:
         writer = csv.writer(stream)
         coordinates = ["base_x_m", "base_y_m", "base_yaw_rad"]
         coordinates.extend(f"{joint.name}_{'m' if joint.prismatic else 'rad'}" for joint in joints)
+        extra_headers = [name + "_per_s2" for name in coordinates] if trajectory.joint_acceleration is not None else []
         writer.writerow(["time_s", *coordinates, *(name + "_per_s" for name in coordinates),
-                         "wheel_fl_rad_s", "wheel_fr_rad_s", "wheel_rl_rad_s", "wheel_rr_rad_s"])
-        writer.writerows(np.column_stack((times, states, speeds, wheels)))
+                         "wheel_fl_rad_s", "wheel_fr_rad_s", "wheel_rl_rad_s", "wheel_rr_rad_s", *extra_headers])
+        columns = (times, states, speeds, wheels, acceleration) if extra_headers else (times, states, speeds, wheels)
+        writer.writerows(np.column_stack(columns))
         self.data = stream.getvalue().encode("utf-8")
         self.set_time(0.0, trajectory.duration)
         self.folder.visible = True

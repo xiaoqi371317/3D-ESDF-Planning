@@ -1,0 +1,138 @@
+{
+  "default": [
+    {
+      "delay_s": 0.0,
+      "lateral_slip": 0.0,
+      "samples_at_50_hz": 1321,
+      "peak_position_error_m": 0.0021338447538779984,
+      "peak_yaw_error_deg": 0.18928047470243783,
+      "peak_joint_error": [
+        0.0005969310496636848,
+        0.0028370629334313335,
+        0.00208973078829755
+      ],
+      "peak_wheel_rad_s": 6.052055903167004,
+      "min_environment_m": 0.025106983551806746,
+      "min_self_m": 0.016593967198980063,
+      "terminal_position_m": 1.571526631469651e-07,
+      "terminal_yaw_deg": 2.4440146523266714e-06,
+      "terminal_joint_error": [
+        0.0,
+        5.53022805198722e-07,
+        1.1462544442706409e-07
+      ]
+    },
+    {
+      "delay_s": 0.04,
+      "lateral_slip": 0.05,
+      "samples_at_50_hz": 1321,
+      "peak_position_error_m": 0.008255696499377728,
+      "peak_yaw_error_deg": 0.6172666938781277,
+      "peak_joint_error": [
+        0.0033925500966034694,
+        0.015079097599644098,
+        0.01204124637412686
+      ],
+      "peak_wheel_rad_s": 6.16979957845337,
+      "min_environment_m": 0.02263463900893585,
+      "min_self_m": 0.01620429425334414,
+      "terminal_position_m": 9.733784681290178e-10,
+      "terminal_yaw_deg": 1.4588103851953364e-08,
+      "terminal_joint_error": [
+        0.0,
+        5.565112649325903e-09,
+        1.1534861908425824e-09
+      ]
+    },
+    {
+      "delay_s": 0.06,
+      "lateral_slip": 0.1,
+      "samples_at_50_hz": 1321,
+      "peak_position_error_m": 0.012828142105837895,
+      "peak_yaw_error_deg": 0.8846702088968019,
+      "peak_joint_error": [
+        0.005123077670747822,
+        0.022944982503357636,
+        0.018363341147556615
+      ],
+      "peak_wheel_rad_s": 6.242091693552943,
+      "min_environment_m": 0.020882469087112762,
+      "min_self_m": 0.015979172716627778,
+      "terminal_position_m": 1.4636828333735538e-07,
+      "terminal_yaw_deg": 2.6733182814752495e-06,
+      "terminal_joint_error": [
+        0.0,
+        4.564874670260971e-08,
+        9.461668446911997e-09
+      ]
+    }
+  ],
+  "low_first": [
+    {
+      "delay_s": 0.0,
+      "lateral_slip": 0.0,
+      "samples_at_50_hz": 1632,
+      "peak_position_error_m": 0.0017438358421389916,
+      "peak_yaw_error_deg": 0.14654360665743238,
+      "peak_joint_error": [
+        0.0003861197877600975,
+        0.002452357156702556,
+        0.0016509579154772025
+      ],
+      "peak_wheel_rad_s": 5.153857742853448,
+      "min_environment_m": 0.020908158780508564,
+      "min_self_m": 0.016285345972522673,
+      "terminal_position_m": 9.357855373049896e-08,
+      "terminal_yaw_deg": 1.479809202341029e-06,
+      "terminal_joint_error": [
+        0.0,
+        3.354963857113638e-07,
+        6.955150438076004e-08
+      ]
+    },
+    {
+      "delay_s": 0.04,
+      "lateral_slip": 0.05,
+      "samples_at_50_hz": 1632,
+      "peak_position_error_m": 0.00565320804543162,
+      "peak_yaw_error_deg": 0.46890195874642193,
+      "peak_joint_error": [
+        0.0020505496646361643,
+        0.014337590521515287,
+        0.009310170855791888
+      ],
+      "peak_wheel_rad_s": 5.2302140986396015,
+      "min_environment_m": 0.018863050178248332,
+      "min_self_m": 0.016030161549645264,
+      "terminal_position_m": 7.378527960639151e-10,
+      "terminal_yaw_deg": 1.1597326507223414e-08,
+      "terminal_joint_error": [
+        0.0,
+        3.0294076866439533e-09,
+        6.28026885136028e-10
+      ]
+    },
+    {
+      "delay_s": 0.06,
+      "lateral_slip": 0.1,
+      "samples_at_50_hz": 1632,
+      "peak_position_error_m": 0.00854825412493642,
+      "peak_yaw_error_deg": 0.6646845387357664,
+      "peak_joint_error": [
+        0.0029933344477851564,
+        0.02224591010137278,
+        0.01392479825523002
+      ],
+      "peak_wheel_rad_s": 5.278208976141819,
+      "min_environment_m": 0.01758906834652594,
+      "min_self_m": 0.01588499884741353,
+      "terminal_position_m": 4.0380785930110545e-08,
+      "terminal_yaw_deg": 8.044001020983954e-07,
+      "terminal_joint_error": [
+        0.0,
+        2.0599878643549607e-08,
+        4.270588541698431e-09
+      ]
+    }
+  ]
+}

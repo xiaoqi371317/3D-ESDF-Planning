@@ -19,12 +19,14 @@ from .controller import Follower, TrackingError
 from .corridor import Corridor, corridor
 from .geometry import Robot
 from .map_planner import MapPlanner
-from .map_scene import MAP_SCENE, MapScene, map_scene
+from .map_motion import plan_map_motion
+from .map_scene import JOINT_ACCELERATION_LIMITS, LOW_FIRST_MAP_SCENE, LOW_FIRST_OPENINGS, MAP_SCENE, MapScene, map_scene
 from .mobile import MOBILE_SCENE, MobileCorridor, mobile_corridor
 from .planner import PlanningError, RRTConnect
 from .scenes import clutter, window
 from .trajectory import PlanarTrajectory, TrajectoryPlayback
 from .viz_trajectory import JointTrajectoryPlots
+from .whole_body_optimizer import refine_trajectory
 
 
 def _move(handle, pose: Pose):
@@ -68,7 +70,8 @@ class Demo:
         gui.set_panel_label("3D ESDF 路径规划")
         gui.configure_theme(dark_mode=True, control_width="medium", show_logo=False,
                             show_share_button=False, brand_color=(80, 196, 168))
-        self.chooser = gui.add_dropdown("场景", ("窗口穿越", "杂乱环境", "双臂收缩走廊", MOBILE_SCENE, MAP_SCENE),
+        self.chooser = gui.add_dropdown("场景", ("窗口穿越", "杂乱环境", "双臂收缩走廊", MOBILE_SCENE,
+                                                MAP_SCENE, LOW_FIRST_MAP_SCENE),
                                         initial_value=scene_name)
         self.instructions = gui.add_markdown("")
         self.free_orientation = gui.add_checkbox("目标姿态自由", False)
@@ -76,6 +79,9 @@ class Demo:
         self.goal_posture = gui.add_dropdown("目标关节姿态", ("展开", "收缩"), initial_value="展开", visible=False)
         self.optimize = gui.add_checkbox("ESDF 轨迹优化", False, disabled=find_spec("torch") is None,
                                          hint="可选 PyTorch 优化，保留通过连续碰撞检查的改进。")
+        self.whole_body_optimize = gui.add_checkbox(
+            "全身样条优化", True, visible=False,
+            hint="用连杆分离约束联合优化底盘、偏航、升降和折臂。")
         plan_button = gui.add_button("规划", color="blue")
         self.execute_button = gui.add_button("执行", color="teal", disabled=True)
         go_button = gui.add_button("规划并执行", color="teal")
@@ -92,6 +98,7 @@ class Demo:
         self.free_orientation.on_update(lambda _: self.events.put(("target", None)))
         self.tolerance.on_update(lambda _: self.events.put(("target", None)))
         self.optimize.on_update(lambda _: self.events.put(("target", None)))
+        self.whole_body_optimize.on_update(lambda _: self.events.put(("target", None)))
 
         @self.goal_posture.on_update
         def on_goal_posture(event):
@@ -201,6 +208,8 @@ class Demo:
         if name not in self.scenes:
             if name == MAP_SCENE:
                 self.scenes[name] = map_scene()
+            elif name == LOW_FIRST_MAP_SCENE:
+                self.scenes[name] = map_scene(openings=LOW_FIRST_OPENINGS, name=name)
             elif name == MOBILE_SCENE:
                 self.scenes[name] = mobile_corridor()
             elif name == "双臂收缩走廊":
@@ -210,6 +219,9 @@ class Demo:
         self.scene = self.scenes[name]
         self.checker = self.scene.checker
         self.map_only = isinstance(self.scene, MapScene)
+        self.trajectory_geometry = self.scene.trajectory_geometry if self.map_only else None
+        self.whole_body_optimize.visible = self.trajectory_geometry is not None
+        self.optimize.visible = self.trajectory_geometry is None
         self.articulated = isinstance(self.scene, (Corridor, MapScene))
         self.mobile = isinstance(self.scene, (MobileCorridor, MapScene))
         self.goal_posture.visible = self.articulated
@@ -273,8 +285,21 @@ class Demo:
                 thickness=2, thickness_units="screen"))
         self._reset()
 
-    def _solve(self, planner, start, goal, free, tolerance, optimize, drive, cancelled):
+    def _solve(self, planner, start, goal, free, tolerance, optimize, drive, cancelled,
+               whole_body_optimize=False):
         clock = perf_counter()
+        if isinstance(planner, MapPlanner) and planner.geometry is not None:
+            refinement = refine_trajectory if whole_body_optimize else None
+            plan, trajectory, minimum = plan_map_motion(
+                planner, start, goal, drive, optimize=refinement, joint_acceleration=JOINT_ACCELERATION_LIMITS,
+                free_orientation=free, position_tolerance=tolerance, cancelled=cancelled)
+            if trajectory.geometry is None:
+                status = " · ESDF 回退"
+            elif getattr(trajectory, "optimization", None):
+                status = " · 全身样条优化通过"
+            else:
+                status = " · 几何净空复检"
+            return plan, minimum, perf_counter() - clock, status, trajectory
         plan = planner.plan(start, goal, free_orientation=free,
                             position_tolerance=tolerance, cancelled=cancelled)
         original = plan
@@ -328,7 +353,7 @@ class Demo:
         goal = self._target_pose()
         if self.articulated:
             if self.map_only:
-                planner = MapPlanner(self.checker, self.seed)
+                planner = MapPlanner(self.checker, self.seed, geometry=self.trajectory_geometry)
             else:
                 planner = ArticulatedPlanner(self.checker, self.scene.bounds, self.scene.portals, self.seed,
                                              adaptive_posture=self.mobile)
@@ -342,8 +367,9 @@ class Demo:
         self._report("正在重新规划" if retarget else "正在规划", detail)
         self.pending = self.workers.submit(self._solve, planner, self.pose, goal,
                                            self.free_orientation.value, self.tolerance.value,
-                                           self.optimize.value, self.scene.drive if self.mobile else None,
-                                           self.cancel.is_set)
+                                           self.optimize.visible and self.optimize.value,
+                                           self.scene.drive if self.mobile else None, self.cancel.is_set,
+                                           self.whole_body_optimize.value)
 
     def _clearance_text(self, environment, self_distance=None):
         if self_distance is None:

@@ -184,13 +184,20 @@ class ArticulatedCollision:
                        free_radius(self_distance - self.self_margin, pair_rates.max(initial=0)))
         fk = self._collision_fk(state.joints)
         radius = free_radius(self._environment_minimum(state, fk) - self.margin, env_rate)
+        return self.self_interval_radius(fk, pair_rates, radius)
+
+    def self_interval_radius(self, fk, pair_rates, radius):
+        """Limit an environment certificate by the allowed self clearance."""
         if radius == 0 or self.fixed_self_clearance <= self.self_margin:
             return 0.0
         if not self.dynamic_pairs:
             return radius
         a, b = self._dynamic_indices
-        rotations, offsets, gaps = self._pair_geometry_batch(self._dynamic_indices, *fk,
-                                                             self.robot.centers, self.robot.half_extents)
+        if self._fast_field is None:
+            rotations, offsets, gaps = self._pair_geometry(a, b, *fk)
+        else:
+            rotations, offsets, gaps = self._pair_geometry_batch(self._dynamic_indices, *fk,
+                                                                 self.robot.centers, self.robot.half_extents)
         slack = np.minimum(gaps, self.self_horizon) - self.self_margin
         # Prune any pair whose box gap already certifies the current radius.
         lower = np.divide(slack, pair_rates, out=np.full_like(slack, np.inf), where=pair_rates > 0)

@@ -29,6 +29,24 @@ def _limit(vector: np.ndarray, maximum: float) -> np.ndarray:
     return vector * (maximum / norm) if norm > maximum else vector
 
 
+def mecanum_tracking_command(trajectory, measured, time, *, gain=7.):
+    """Use measured pose and joints to command a planar whole-body trajectory."""
+    time = np.clip(time, 0., trajectory.duration)
+    target = trajectory.at(time)
+    velocity = trajectory.spline(time, nu=1)
+    drive, robot = trajectory.drive, trajectory.checker.robot
+    desired = np.r_[velocity[:2], 0.] + gain * (target.position - measured.position)
+    local = measured.rotation.apply(desired, inverse=True)
+    yaw_rate = velocity[2] + gain * measured.base.relative_rotation(target.base)[2]
+    wheels = drive.wheel_speeds(*local[:2], yaw_rate)
+    peak = np.abs(wheels).max()
+    if peak > drive.wheel_speed_limit:
+        wheels *= drive.wheel_speed_limit / peak
+    joint_error = robot.delta(measured.joints, target.joints)
+    joints = np.clip(velocity[3:] + gain * joint_error, -robot.speeds, robot.speeds)
+    return wheels, joints
+
+
 class Follower:
     def __init__(self, path: list[Pose] | list[Configuration], checker: CollisionChecker | ArticulatedCollision,
                  linear_limit: float = 1.0, angular_limit: float = 2.4, drive=None):
